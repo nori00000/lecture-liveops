@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "profile": "public-full",
+  "intent": {
+    "visibility": "public",
+    "images": "required",
+    "languages": [
+      "en",
+      "ko"
+    ],
+    "release": "requested",
+    "description": "Privacy-first live operations workspace for lectures, workshops, and training sessions",
+    "homepage": "",
+    "topics": [
+      "dashboard",
+      "education",
+      "liveops",
+      "mcp",
+      "nextjs",
+      "privacy",
+      "training",
+      "typescript"
+    ]
+  },
+  "approvals": {
+    "images": true,
+    "publish": true,
+    "release": true
+  },
+  "local": {
+    "artifacts": "complete",
+    "version": "pending"
+  },
+  "remote": {
+    "push": "pending",
+    "metadata": "pending",
+    "tag": "not_requested",
+    "release": "not_requested",
+    "verification": "pending"
+  },
+  "result": "incomplete"
+}

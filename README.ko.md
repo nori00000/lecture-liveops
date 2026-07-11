@@ -1,5 +1,7 @@
 [English](README.md) | [한국어](README.ko.md)
 
+[English](README.md) | [한국어](README.ko.md)
+
 <div align="center">
 
 # lecture-liveops

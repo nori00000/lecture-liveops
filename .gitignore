@@ -44,3 +44,8 @@ internal/
 .github/publish-denylist.txt
 .idea/
 .vscode/
+# --- github harness: 공통 무시 패턴 ---
+# 환경/시크릿
+# 내부 문서 (공개 금지)
+# public 누출 차단 내부어 목록(로컬 유지 — 공개 repo에 올리지 않음)
+# OS/에디터
