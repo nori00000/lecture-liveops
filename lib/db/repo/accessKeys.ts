@@ -1,19 +1,39 @@
+import { randomBytes } from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import { getStore, bumpRevision } from '../fixture/store'
 import { newId, nowIso } from '@/lib/util/id'
+import { isFixture } from '../client'
 import { isNeonEnabled } from '../neon'
 import { query, COLS, isoOrString, type RlsContext, adminContext } from '../neonHelpers'
 import type { AccessKey, Role } from '../schema'
 
 const DEV_BCRYPT_COST = 10
 const PROD_BCRYPT_COST = 12
+const PREFIX_BYTES = 6
+const PREFIX_LENGTH = 8
+const PREFIXED_KEY_RE = /^[A-Za-z0-9_-]{8}\..+$/
 
 export function accessKeyHashCost(env = process.env.NODE_ENV) {
   return env === 'production' ? PROD_BCRYPT_COST : DEV_BCRYPT_COST
 }
 
+export function generateAccessKeyPrefix(): string {
+  return randomBytes(PREFIX_BYTES).toString('base64url').slice(0, PREFIX_LENGTH)
+}
+
+export function withAccessKeyPrefix(rawKey: string, prefix = generateAccessKeyPrefix()): string {
+  return PREFIXED_KEY_RE.test(rawKey) ? rawKey : `${prefix}.${rawKey}`
+}
+
+function accessKeyPrefix(rawKey: string): string | null {
+  return PREFIXED_KEY_RE.test(rawKey) ? rawKey.slice(0, PREFIX_LENGTH) : null
+}
+
 type Row = Record<string, unknown>
-function toAccessKey(r: Row): AccessKey {
+type AccessKeyWithPrefix = AccessKey & { key_prefix?: string | null }
+type IssuedAccessKey = AccessKeyWithPrefix & { raw_key: string }
+
+function toAccessKey(r: Row): AccessKeyWithPrefix {
   return {
     id: String(r.id),
     session_id: String(r.session_id),
@@ -21,7 +41,23 @@ function toAccessKey(r: Row): AccessKey {
     key_hash: String(r.key_hash),
     expires_at: isoOrString(r.expires_at),
     revoked_at: r.revoked_at ? isoOrString(r.revoked_at) : null,
-    scope: (r.scope as Record<string, unknown>) ?? {}
+    scope: (r.scope as Record<string, unknown>) ?? {},
+    key_prefix: typeof r.key_prefix === 'string' ? r.key_prefix : null
+  }
+}
+
+function active(k: AccessKey, now: string): boolean {
+  return !k.revoked_at && k.expires_at >= now
+}
+
+async function matchesRawKey(rawKey: string, k: AccessKey): Promise<boolean> {
+  if (isFixture() && k.key_hash.startsWith('demo-hash-')) {
+    return k.key_hash === 'demo-hash-' + rawKey || k.key_hash.endsWith(rawKey)
+  }
+  try {
+    return await bcrypt.compare(rawKey, k.key_hash)
+  } catch {
+    return false
   }
 }
 
@@ -40,43 +76,53 @@ export const accessKeys = {
     const all = await accessKeys.list(ctx, sessionId)
     return all.map(({ key_hash, ...rest }) => ({ ...rest, has_hash: Boolean(key_hash) }))
   },
-  async issue(ctx: RlsContext, input: { session_id: string; role: Role; expires_at: string; rawKey: string }): Promise<AccessKey> {
-    const key_hash = await bcrypt.hash(input.rawKey, accessKeyHashCost())
-    const row: AccessKey = {
+  async issue(ctx: RlsContext, input: { session_id: string; role: Role; expires_at: string; rawKey: string }): Promise<IssuedAccessKey> {
+    const raw_key = withAccessKeyPrefix(input.rawKey)
+    const key_prefix = accessKeyPrefix(raw_key)
+    const key_hash = await bcrypt.hash(raw_key, accessKeyHashCost())
+    const row: IssuedAccessKey = {
       id: newId('ak'),
       session_id: input.session_id,
       role: input.role,
       key_hash,
       expires_at: input.expires_at,
       revoked_at: null,
-      scope: {}
+      scope: {},
+      key_prefix,
+      raw_key
     }
+    const { raw_key: _rawKey, ...storedRow } = row
     if (isNeonEnabled()) {
-      await query(ctx, `insert into access_keys (${COLS.access_keys}) values ($1,$2,$3,$4,$5,$6,$7)`,
-        [row.id, row.session_id, row.role, row.key_hash, row.expires_at, row.revoked_at, JSON.stringify(row.scope)])
+      await query(ctx, `insert into access_keys (id, session_id, role, key_hash, expires_at, revoked_at, scope, key_prefix) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [row.id, row.session_id, row.role, row.key_hash, row.expires_at, row.revoked_at, JSON.stringify(row.scope), row.key_prefix])
       return row
     }
-    getStore().access_keys = [...getStore().access_keys, row]
+    void _rawKey
+    getStore().access_keys = [...getStore().access_keys, storedRow]
     bumpRevision()
     return row
   },
-  // verify는 raw key 비교 위해 전체 스캔 — server-only, admin context 사용
+  // server-only, admin context 사용. Prefix가 있으면 key_prefix 인덱스로 먼저 조회한다.
   async verify(rawKey: string): Promise<AccessKey | null> {
     if (!rawKey) return null
     const now = new Date().toISOString()
-    const all = await accessKeys.list(adminContext())
-    for (const k of all) {
-      if (k.revoked_at) continue
-      if (k.expires_at < now) continue
-      if (k.key_hash.startsWith('demo-hash-')) {
-        if (k.key_hash === 'demo-hash-' + rawKey) return k
-        if (k.key_hash.endsWith(rawKey)) return k
-      } else {
-        try {
-          if (await bcrypt.compare(rawKey, k.key_hash)) return k
-        } catch {
-          // ignore
-        }
+    const prefix = accessKeyPrefix(rawKey)
+
+    if (prefix) {
+      const candidates = isNeonEnabled()
+        ? await query<AccessKeyWithPrefix>(adminContext(), `select ${COLS.access_keys}, key_prefix from access_keys where key_prefix = $1`, [prefix])
+        : (getStore().access_keys as AccessKeyWithPrefix[]).filter((k) => k.key_prefix === prefix)
+      for (const k of candidates) {
+        if (active(k, now) && await matchesRawKey(rawKey, k)) return k
+      }
+    }
+
+    const legacy = isNeonEnabled()
+      ? await query<AccessKeyWithPrefix>(adminContext(), `select ${COLS.access_keys}, key_prefix from access_keys where key_prefix is null`, [])
+      : (getStore().access_keys as AccessKeyWithPrefix[]).filter((k) => !k.key_prefix)
+    for (const k of legacy) {
+      if (active(k, now) && await matchesRawKey(rawKey, k)) {
+        return k
       }
     }
     return null
