@@ -357,6 +357,87 @@ export const MaterialVersionSchema = z.object({
   updated_at: ts
 })
 
+// ============================================================
+// 숙의 도메인 코어 (deliberation core) — PRODUCT-PLAN-v2 §3
+// ============================================================
+export const RoundModeEnum = z.enum(['plenary', 'breakout'])
+export const RoundStatusEnum = z.enum(['pending', 'active', 'closed'])
+export const StatementVisibilityEnum = z.enum(['public', 'group', 'private'])
+export const ModerationStateEnum = z.enum(['visible', 'flagged', 'hidden'])
+export const VoteValueEnum = z.enum(['agree', 'disagree', 'pass'])
+export const ModerationActionEnum = z.enum(['flag', 'hide', 'restore', 'approve'])
+
+export const ParticipantSchema = z.object({
+  id,
+  session_id: id,
+  display_alias: z.string().default(''),
+  anon_handle: z.string().default(''),
+  access_key_id: z.string().nullable().default(null),
+  created_at: ts
+})
+
+export const WorkshopGroupSchema = z.object({
+  id,
+  session_id: id,
+  label: z.string(),
+  topic: z.string().default('')
+})
+
+export const GroupMembershipSchema = z.object({
+  id,
+  participant_id: id,
+  group_id: id,
+  created_at: ts
+})
+
+export const WorkshopRoundSchema = z.object({
+  id,
+  session_id: id,
+  round_index: z.number().int(),
+  title: z.string().default(''),
+  mode: RoundModeEnum.default('plenary'),
+  status: RoundStatusEnum.default('pending'),
+  created_at: ts
+})
+
+export const StatementSchema = z.object({
+  id,
+  session_id: id,
+  round_id: z.string().nullable().default(null),
+  group_id: z.string().nullable().default(null),
+  author_participant_id: z.string().nullable().default(null),
+  body: z.string(),
+  visibility: StatementVisibilityEnum.default('group'),
+  moderation_state: ModerationStateEnum.default('visible'),
+  created_at: ts
+})
+
+export const StatementVoteSchema = z.object({
+  id,
+  statement_id: id,
+  participant_id: id,
+  vote: VoteValueEnum,
+  created_at: ts
+})
+
+export const LandscapeSnapshotSchema = z.object({
+  id,
+  session_id: id,
+  round_id: z.string().nullable().default(null),
+  computed_at: ts,
+  payload: z.record(z.unknown()).default({}),
+  published_at: ts.nullable().default(null)
+})
+
+export const ModerationEventSchema = z.object({
+  id,
+  statement_id: id,
+  actor_role: RoleEnum,
+  action: ModerationActionEnum,
+  reason: z.string().default(''),
+  created_at: ts
+})
+
 export const ActionLedgerSchema = z.object({
   id,
   session_id: z.string().nullable().default(null),
@@ -395,5 +476,21 @@ export type LiveObservation = z.infer<typeof LiveObservationSchema>
 export type SituationSnapshotRow = z.infer<typeof SituationSnapshotSchema>
 export type MaterialVersionRow = z.infer<typeof MaterialVersionSchema>
 export type ActionLedger = z.infer<typeof ActionLedgerSchema>
+
+export type Participant = z.infer<typeof ParticipantSchema>
+export type WorkshopGroup = z.infer<typeof WorkshopGroupSchema>
+export type GroupMembership = z.infer<typeof GroupMembershipSchema>
+export type WorkshopRound = z.infer<typeof WorkshopRoundSchema>
+export type Statement = z.infer<typeof StatementSchema>
+export type StatementVote = z.infer<typeof StatementVoteSchema>
+export type LandscapeSnapshot = z.infer<typeof LandscapeSnapshotSchema>
+export type ModerationEvent = z.infer<typeof ModerationEventSchema>
+export type RoundMode = z.infer<typeof RoundModeEnum>
+export type RoundStatus = z.infer<typeof RoundStatusEnum>
+export type StatementVisibility = z.infer<typeof StatementVisibilityEnum>
+export type ModerationState = z.infer<typeof ModerationStateEnum>
+export type VoteValue = z.infer<typeof VoteValueEnum>
+export type ModerationAction = z.infer<typeof ModerationActionEnum>
+
 export type Role = z.infer<typeof RoleEnum>
 export type Visibility = z.infer<typeof VisibilityEnum>

@@ -19,7 +19,15 @@ import type {
   ActionLedger,
   SeatLayout,
   SeatMark,
-  SeatLayoutTemplate
+  SeatLayoutTemplate,
+  Participant,
+  WorkshopGroup,
+  GroupMembership,
+  WorkshopRound,
+  Statement,
+  StatementVote,
+  LandscapeSnapshot,
+  ModerationEvent
 } from '../schema'
 
 import {
@@ -63,6 +71,16 @@ type Store = {
   export_jobs: ExportJob[]
   external_archives: ExternalArchive[]
   action_ledger: ActionLedger[]
+
+  // 숙의 도메인 코어 (deliberation core)
+  participants: Participant[]
+  workshop_groups: WorkshopGroup[]
+  group_memberships: GroupMembership[]
+  workshop_rounds: WorkshopRound[]
+  statements: Statement[]
+  statement_votes: StatementVote[]
+  landscape_snapshots: LandscapeSnapshot[]
+  moderation_events: ModerationEvent[]
   revision: number
 }
 
@@ -93,6 +111,14 @@ function initStore(): Store {
     export_jobs: [],
     external_archives: [],
     action_ledger: [],
+    participants: [],
+    workshop_groups: [],
+    group_memberships: [],
+    workshop_rounds: [],
+    statements: [],
+    statement_votes: [],
+    landscape_snapshots: [],
+    moderation_events: [],
     revision: 1
   }
 }

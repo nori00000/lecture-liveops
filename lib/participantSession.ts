@@ -9,6 +9,9 @@ export type ParticipantSession = {
   sessionId: string
   role: Role
   exp: number
+  // 숙의 도메인 — 참가자 identity/그룹 배정. 하위호환: 없어도 파싱 성공.
+  participantId?: string
+  groupId?: string
 }
 
 function sessionSecret(): string {
@@ -36,9 +39,17 @@ function safeEqual(left: string, right: string): boolean {
   return timingSafeEqual(a, b)
 }
 
-export function createParticipantSession(accessKey: AccessKey, now = Date.now()): string {
+export function createParticipantSession(
+  accessKey: AccessKey,
+  now = Date.now(),
+  identity: { participantId?: string; groupId?: string } = {}
+): string {
   const exp = Math.min(now + PARTICIPANT_SESSION_MAX_AGE_SEC * 1000, new Date(accessKey.expires_at).getTime())
-  const payload = base64url(JSON.stringify({ accessKeyId: accessKey.id, sessionId: accessKey.session_id, role: accessKey.role, exp } satisfies ParticipantSession))
+  const session: ParticipantSession = { accessKeyId: accessKey.id, sessionId: accessKey.session_id, role: accessKey.role, exp }
+  // 필드가 있을 때만 포함 (하위호환 payload 유지)
+  if (identity.participantId) session.participantId = identity.participantId
+  if (identity.groupId) session.groupId = identity.groupId
+  const payload = base64url(JSON.stringify(session))
   return `${payload}.${sign(payload)}`
 }
 

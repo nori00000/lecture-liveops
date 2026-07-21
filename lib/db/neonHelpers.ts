@@ -114,7 +114,15 @@ export const COLS = {
   excel_cells: 'id, template_id, sheet_name, cell_ref, value, formula, updated_by, updated_at',
   export_jobs: 'id, session_id, profile, formats, status, output_paths, created_at',
   external_archives: 'id, session_id, target_path, status, frontmatter, created_at',
-  action_ledger: 'id, session_id, actor_type, actor_role, tool, action_name, input_hash, input_redacted_summary, output_summary, status, created_at'
+  action_ledger: 'id, session_id, actor_type, actor_role, tool, action_name, input_hash, input_redacted_summary, output_summary, status, created_at',
+  participants: 'id, session_id, display_alias, anon_handle, access_key_id, created_at',
+  workshop_groups: 'id, session_id, label, topic',
+  group_memberships: 'id, participant_id, group_id, created_at',
+  workshop_rounds: 'id, session_id, round_index, title, mode, status, created_at',
+  statements: 'id, session_id, round_id, group_id, author_participant_id, body, visibility, moderation_state, created_at',
+  statement_votes: 'id, statement_id, participant_id, vote, created_at',
+  landscape_snapshots: 'id, session_id, round_id, computed_at, payload, published_at',
+  moderation_events: 'id, statement_id, actor_role, action, reason, created_at'
 } as const
 
 export function isoOrString(v: unknown): string {

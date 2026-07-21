@@ -35,7 +35,18 @@ const MATRIX: Record<string, Role[]> = {
   'liveops.update_session_phase': ['admin', 'instructor'],
   'liveops.end_session': ['admin', 'instructor'],
   'liveops.upsert_material_version': ['admin', 'instructor', 'assistant'],
-  'liveops.list_session_dashboard': ['admin', 'instructor', 'assistant', 'participant']
+  'liveops.list_session_dashboard': ['admin', 'instructor', 'assistant', 'participant'],
+  // 숙의 도메인 — participant 는 register/submit/vote 만, 나머지는 operator(instructor/assistant/admin)
+  'delib.create_workshop': ['admin', 'instructor', 'assistant'],
+  'delib.register_participant': ['admin', 'instructor', 'assistant', 'participant'],
+  'delib.upsert_group': ['admin', 'instructor', 'assistant'],
+  'delib.assign_participant': ['admin', 'instructor', 'assistant'],
+  'delib.start_round': ['admin', 'instructor', 'assistant'],
+  'delib.submit_statement': ['admin', 'instructor', 'assistant', 'participant'],
+  'delib.moderate_statement': ['admin', 'instructor', 'assistant'],
+  'delib.vote_statement': ['admin', 'instructor', 'assistant', 'participant'],
+  'delib.compute_snapshot': ['admin', 'instructor', 'assistant'],
+  'delib.publish_snapshot': ['admin', 'instructor', 'assistant']
 }
 
 export function isAllowed(action: string, role: Role): boolean {

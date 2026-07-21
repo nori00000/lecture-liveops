@@ -25,7 +25,7 @@ describe('permission matrix', () => {
     expect(isAllowed('liveops.nope', 'admin')).toBe(false);
   });
 
-  it('allActions() 등록 액션 34개 (delete/resolve/update_observation·delete_ops_log·end_session 및 템플릿 포함)', () => {
-    expect(allActions().length).toBe(34);
+  it('allActions() 등록 액션 44개 (liveops 34종 + delib 10종)', () => {
+    expect(allActions().length).toBe(44);
   });
 });
