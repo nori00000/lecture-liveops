@@ -38,6 +38,7 @@ const MATRIX: Record<string, Role[]> = {
   'liveops.list_session_dashboard': ['admin', 'instructor', 'assistant', 'participant'],
   // 숙의 도메인 — participant 는 submit/vote 만. register 는 셀프서비스 제거(운영자 전용) —
   // 참가자 신원은 /p/enter 에서 검증된 access_key 로만 생성한다 (ballot stuffing 방지, C-B).
+  'delib.update_workshop_settings': ['admin', 'instructor', 'assistant'],
   'delib.create_workshop': ['admin', 'instructor', 'assistant'],
   'delib.register_participant': ['admin', 'instructor', 'assistant'],
   'delib.upsert_group': ['admin', 'instructor', 'assistant'],

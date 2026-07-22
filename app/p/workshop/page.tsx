@@ -33,9 +33,9 @@ type Data = {
   anonymity?: { available: boolean; minParticipants: number }
 }
 
-// 참가자용 폴링: 라운드/발언은 준수히 반응하되 결과 저부하 원칙(§3)에 맞춰 8초 간격.
+// 참가자용 폴링: 개별 폰 결과는 저부하 원칙(§3, N3)에 맞춰 12초 간격.
 // 투표/제출 직후에는 mutate()로 즉시 최신화한다.
-const POLL_MS = 8000
+const POLL_MS = 12000
 
 export default function ParticipantWorkshopPage() {
   const router = useRouter()
@@ -43,6 +43,10 @@ export default function ParticipantWorkshopPage() {
   const [body, setBody] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // N2: statement 별 투표 진행 중 표시 — 연타/레이스 방지(pending 중 재클릭 disable).
+  const [pendingVotes, setPendingVotes] = useState<Set<string>>(new Set())
+  // N5: 투표/제출 성공을 보조기술에 알리는 aria-live 상태 메시지.
+  const [status, setStatus] = useState('')
 
   if (data?.ok === false) {
     return (
@@ -76,7 +80,8 @@ export default function ParticipantWorkshopPage() {
       }
       setError(null)
       setBody('')
-      mutate()
+      await mutate()
+      setStatus('의견이 제출되었습니다.')
     } catch {
       setError('의견 제출 중 오류가 발생했습니다. 네트워크 상태를 확인해 주세요.')
     } finally {
@@ -86,6 +91,9 @@ export default function ParticipantWorkshopPage() {
 
   async function castVote(statementId: string, vote: VoteValue) {
     if (!sessionId) return
+    // N2: 이미 진행 중인 statement 는 중복 투표 방지.
+    if (pendingVotes.has(statementId)) return
+    setPendingVotes((prev) => new Set(prev).add(statementId))
     try {
       const res = await invoke({
         action: 'delib.vote_statement',
@@ -98,9 +106,17 @@ export default function ParticipantWorkshopPage() {
         return
       }
       setError(null)
-      mutate()
+      // N2: 서버 반영을 기다렸다가(await) 다음 조작을 허용 — 낙관적 상태 어긋남 방지.
+      await mutate()
+      setStatus('투표가 반영되었습니다.')
     } catch {
       setError('투표 중 오류가 발생했습니다. 네트워크 상태를 확인해 주세요.')
+    } finally {
+      setPendingVotes((prev) => {
+        const next = new Set(prev)
+        next.delete(statementId)
+        return next
+      })
     }
   }
 
@@ -126,6 +142,9 @@ export default function ParticipantWorkshopPage() {
             {error}
           </div>
         ) : null}
+
+        {/* N5: 투표/제출 성공을 보조기술에 알림 (시각적으로는 sr-only). */}
+        <div role="status" aria-live="polite" className="sr-only">{status}</div>
 
         {/* 현재 라운드 안내 */}
         <Card className="mb-4">
@@ -178,6 +197,7 @@ export default function ParticipantWorkshopPage() {
                   idBase={`vote-${s.id}`}
                   value={data?.myVotes?.[s.id]}
                   onVote={(v) => castVote(s.id, v)}
+                  disabled={pendingVotes.has(s.id)}
                 />
               </li>
             ))}

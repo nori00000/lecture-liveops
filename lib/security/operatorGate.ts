@@ -43,7 +43,9 @@ export function operatorCookieOptions() {
 }
 
 // 게이트 보호 대상 prefix. /api/data/participant는 참가자 세션이 자체 보호.
-const PROTECTED_PREFIXES = ['/today', '/companies', '/courses', '/dates', '/settings']
+// /workshops = 숙의 운영자 화면(목록/생성/콘솔/설정/프로젝터). 서버컴포넌트가 adminContext 로 직접 읽으므로
+// 미들웨어 게이트가 없으면 무인증 노출된다 (C1). 참가자 화면은 /p/* 로 분리되어 있어 영향 없음.
+const PROTECTED_PREFIXES = ['/today', '/companies', '/courses', '/dates', '/settings', '/workshops']
 const PROTECTED_API_PREFIX = '/api/data'
 // 참가자 자체 세션 쿠키로 보호되는 읽기 경로는 operator 게이트에서 제외한다.
 // /api/data/delib/participant-view 는 참가자 신원 쿠키를 자체 검증하므로 operator 키가 없어도 접근 가능해야 한다.

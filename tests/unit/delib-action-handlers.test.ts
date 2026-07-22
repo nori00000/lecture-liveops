@@ -14,6 +14,7 @@ beforeAll(() => {
 });
 
 import {
+  updateWorkshopSettings,
   createWorkshop,
   registerParticipant,
   upsertGroup,
@@ -44,6 +45,22 @@ function env(action: string, role: 'admin' | 'instructor' | 'assistant' | 'parti
   };
 }
 
+// M1: create_workshop/start_round 는 서버 사전합의 게이트를 통과해야 한다.
+// 워크숍 시작 전 운영자가 프라이버시 설정 + 사전합의를 서버에 확정한다.
+async function confirmConsent(sessionId = SID, minorSession = false, minorConsent = false): Promise<void> {
+  await updateWorkshopSettings({
+    envelope: env('delib.update_workshop_settings', 'instructor', {
+      sessionId,
+      anonymousMode: false,
+      disclosure: 'participants',
+      retentionDays: 30,
+      minorSession,
+      consentConfirmed: true,
+      minorConsent
+    }, sessionId)
+  });
+}
+
 // register 는 이제 operator 전용 — instructor 로 생성.
 async function newParticipant(alias = 'p'): Promise<string> {
   const r = await registerParticipant({ envelope: env('delib.register_participant', 'instructor', { sessionId: SID, displayAlias: alias }) });
@@ -57,8 +74,25 @@ async function newStatement(): Promise<string> {
 }
 
 describe('delib action handlers (fixture mode)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetStore();
+    await confirmConsent(SID);
+  });
+
+  it('update_workshop_settings — privacy_settings 를 세션 metadata 에 영속', async () => {
+    const r = await updateWorkshopSettings({
+      envelope: env('delib.update_workshop_settings', 'instructor', {
+        sessionId: SID,
+        anonymousMode: true,
+        disclosure: 'operators_only',
+        retentionDays: 7,
+        minorSession: false,
+        consentConfirmed: true
+      })
+    });
+    const ps = (r.data as { privacySettings: { anonymousMode: boolean; disclosure: string } }).privacySettings;
+    expect(ps.anonymousMode).toBe(true);
+    expect(ps.disclosure).toBe('operators_only');
   });
 
   it('createWorkshop — plenary round 0 생성', async () => {

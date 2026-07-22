@@ -35,8 +35,15 @@ describe('delib permission matrix', () => {
     }
   });
 
-  it('catalog 에 delib 액션 10종이 전부 등록되어 있다', () => {
+  it('update_workshop_settings 는 operator 전용 (participant 불가)', () => {
+    expect(isAllowed('delib.update_workshop_settings', 'participant')).toBe(false);
+    for (const role of ['admin', 'instructor', 'assistant'] as const) {
+      expect(isAllowed('delib.update_workshop_settings', role)).toBe(true);
+    }
+  });
+
+  it('catalog 에 delib 액션 11종이 전부 등록되어 있다', () => {
     const delibActions = listCatalog().filter((a) => a.startsWith('delib.'));
-    expect(delibActions.length).toBe(10);
+    expect(delibActions.length).toBe(11);
   });
 });

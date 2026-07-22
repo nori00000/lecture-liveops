@@ -20,6 +20,8 @@ beforeAll(() => {
 });
 
 import {
+  updateWorkshopSettings,
+  createWorkshop,
   registerParticipant,
   upsertGroup,
   assignParticipant,
@@ -61,6 +63,53 @@ async function mkGroup(sessionId = SID, label = '조'): Promise<string> {
   const r = await upsertGroup({ envelope: env('delib.upsert_group', 'instructor', { sessionId, label }, sessionId) });
   return (r.data as { groupId: string }).groupId;
 }
+// M1: create_workshop/start_round 게이트 통과용 사전합의 확정.
+async function confirmConsent(sessionId = SID, minorSession = false, minorConsent = false): Promise<void> {
+  await updateWorkshopSettings({
+    envelope: env('delib.update_workshop_settings', 'instructor', {
+      sessionId, anonymousMode: false, disclosure: 'participants', retentionDays: 30, minorSession, consentConfirmed: true, minorConsent
+    }, sessionId)
+  });
+}
+
+describe('delib 보안 — M1 프라이버시 사전합의 서버 게이트', () => {
+  beforeEach(() => resetStore());
+
+  it('사전합의 미확정이면 create_workshop 거부', async () => {
+    await expect(
+      createWorkshop({ envelope: env('delib.create_workshop', 'instructor', { sessionId: SID, title: 'x' }) })
+    ).rejects.toThrow(/consent not confirmed/);
+  });
+
+  it('사전합의 미확정이면 start_round 거부', async () => {
+    await expect(
+      startRound({ envelope: env('delib.start_round', 'instructor', { sessionId: SID, roundIndex: 1, title: 'R1' }) })
+    ).rejects.toThrow(/consent not confirmed/);
+  });
+
+  it('사전합의 확정 후 create_workshop 통과', async () => {
+    await confirmConsent(SID);
+    const r = await createWorkshop({ envelope: env('delib.create_workshop', 'instructor', { sessionId: SID, title: 'x' }) });
+    expect((r.data as { roundId: string }).roundId).toMatch(/^wr-/);
+  });
+
+  it('미성년자 세션 — 법정대리인 동의 없으면 start_round 거부', async () => {
+    // 사전합의는 했으나 minorSession=true 인데 minorConsent 미확보.
+    await confirmConsent(SID, true, false);
+    await expect(
+      startRound({ envelope: env('delib.start_round', 'instructor', { sessionId: SID, roundIndex: 1, title: 'R1' }) })
+    ).rejects.toThrow(/minor guardian consent required/);
+    // 법정대리인 동의 확보 후 통과.
+    await confirmConsent(SID, true, true);
+    const r = await startRound({ envelope: env('delib.start_round', 'instructor', { sessionId: SID, roundIndex: 1, title: 'R1' }) });
+    expect((r.data as { status: string }).status).toBe('active');
+  });
+
+  it('update_workshop_settings 는 participant 권한 없음 (operator 전용)', () => {
+    expect(isAllowed('delib.update_workshop_settings', 'participant')).toBe(false);
+    expect(isAllowed('delib.update_workshop_settings', 'instructor')).toBe(true);
+  });
+});
 
 describe('delib 보안 — 투표/발언 신원 위조 방어', () => {
   beforeEach(() => resetStore());
@@ -110,7 +159,7 @@ describe('delib 보안 — 투표/발언 신원 위조 방어', () => {
 });
 
 describe('delib 보안 — 발언 세션 경계 / closed round (C-E)', () => {
-  beforeEach(() => resetStore());
+  beforeEach(async () => { resetStore(); await confirmConsent(SID); });
 
   it('크로스세션 group 발언 거부 — group 이 타 세션이면 throw', async () => {
     const otherGroup = await mkGroup(OTHER, '타세션조');
@@ -138,7 +187,7 @@ describe('delib 보안 — 발언 세션 경계 / closed round (C-E)', () => {
 });
 
 describe('delib 보안 — 구조 무결성 (M-3/M-4/M-5)', () => {
-  beforeEach(() => resetStore());
+  beforeEach(async () => { resetStore(); await confirmConsent(SID); });
 
   it('M-4 startRound active 단일성 — 여러 번 시작해도 세션당 active 1개', async () => {
     await startRound({ envelope: env('delib.start_round', 'instructor', { sessionId: SID, roundIndex: 1, title: 'R1' }) });

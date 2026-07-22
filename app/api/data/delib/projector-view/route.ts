@@ -30,11 +30,19 @@ export async function GET(req: Request) {
     })
   }
 
-  // 결과판은 발언 원문을 함께 보여줘야 의미가 있다 — 스냅샷 payload 는 statementId·집계만 담으므로
-  // 현재 visible 발언의 id→body 맵을 덧붙인다 (집계+텍스트, 개인 표는 여전히 미노출).
+  // M3: 결과판은 랭킹(consensus/divisive/minority)에 실제 표시되는 발언 원문만 내려보낸다.
+  // suppressed(k-익명 억제)·랭킹 미표시 발언의 원문은 payload 로 새어나가지 않게 allowlist 로 제외한다.
+  const payload = latestPublished.payload as unknown as SnapshotPayload
+  const shownIds = new Set<string>([
+    ...(payload.consensus ?? []).map((m) => m.statementId),
+    ...(payload.divisive ?? []).map((m) => m.statementId),
+    ...(payload.minority ?? []).map((m) => m.statementId)
+  ])
   const visible = await statements.list(ctx, sessionId, latestPublished.round_id ?? undefined, { visibleOnly: true })
   const statementBodies: Record<string, string> = {}
-  for (const s of visible) statementBodies[s.id] = s.body
+  for (const s of visible) {
+    if (shownIds.has(s.id)) statementBodies[s.id] = s.body
+  }
 
   return NextResponse.json({
     ok: true,
@@ -43,7 +51,7 @@ export async function GET(req: Request) {
     snapshotId: latestPublished.id,
     computedAt: latestPublished.computed_at,
     publishedAt: latestPublished.published_at,
-    payload: latestPublished.payload as unknown as SnapshotPayload,
+    payload,
     statementBodies
   })
 }

@@ -46,4 +46,22 @@ describe('operator gate', () => {
       expect(isOperatorProtectedPath(p), p).toBe(false)
     }
   })
+
+  it('delib 경로 판정 — 운영자 화면/뷰는 보호, participant-view 는 면제 (C1)', () => {
+    // 운영자 화면 + 운영자 데이터 뷰는 전부 보호.
+    for (const p of [
+      '/workshops',
+      '/workshops/new',
+      '/workshops/se-001/console',
+      '/workshops/se-001/settings',
+      '/workshops/se-001/projector',
+      '/api/data/delib/console-view',
+      '/api/data/delib/projector-view',
+      '/api/data/delib/workshop'
+    ]) {
+      expect(isOperatorProtectedPath(p), p).toBe(true)
+    }
+    // 참가자 뷰는 자체 쿠키로 보호 — operator 게이트 면제.
+    expect(isOperatorProtectedPath('/api/data/delib/participant-view')).toBe(false)
+  })
 })

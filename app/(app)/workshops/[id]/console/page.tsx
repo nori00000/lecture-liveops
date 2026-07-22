@@ -320,7 +320,7 @@ function ModerationQueue({
             </div>
             <div className="flex shrink-0 gap-1">
               {moderationButtons(s.moderationState).map((b) => (
-                <Button key={b.action} size="sm" variant={b.variant} disabled={busy} onClick={() => onModerate(s.id, b.action)}>{b.label}</Button>
+                <Button key={b.action} size="sm" variant={b.variant} disabled={busy} onClick={() => onModerate(s.id, b.action)} className={MOD_BTN_CLASS}>{b.label}</Button>
               ))}
             </div>
           </li>
@@ -329,6 +329,9 @@ function ModerationQueue({
     </Card>
   )
 }
+
+// N4: moderation(파괴적 포함) 버튼 최소 터치 타겟 44×44px + 키보드 포커스 링.
+const MOD_BTN_CLASS = 'min-h-[44px] min-w-[44px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent'
 
 function StatementList({
   statements,
@@ -350,7 +353,7 @@ function StatementList({
               <p className="text-sm text-text break-words min-w-0">{s.body}</p>
               <div className="flex shrink-0 gap-1">
                 {moderationButtons(s.moderationState).map((b) => (
-                  <Button key={b.action} size="sm" variant={b.variant} disabled={busy} onClick={() => onModerate(s.id, b.action)}>{b.label}</Button>
+                  <Button key={b.action} size="sm" variant={b.variant} disabled={busy} onClick={() => onModerate(s.id, b.action)} className={MOD_BTN_CLASS}>{b.label}</Button>
                 ))}
               </div>
             </div>

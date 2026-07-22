@@ -1,13 +1,84 @@
 import { z } from 'zod'
-import { participants, delibGroups, delibRounds, statements, votes, landscape } from '@/lib/db/repo'
+import { sessions, participants, delibGroups, delibRounds, statements, votes, landscape } from '@/lib/db/repo'
 import { RoundModeEnum, StatementVisibilityEnum, VoteValueEnum, ModerationActionEnum } from '@/lib/db/schema'
 import { envelopeToCtx } from '../context'
 import { computeSnapshotPayload } from '@/lib/delib/metrics'
+import { nowIso } from '@/lib/util/id'
 import type { Handler } from './types'
 
 // ============================================================
 // delib.* — 숙의 워크숍 액션 10종 (PRODUCT-PLAN-v2 §3)
 // ============================================================
+
+// ------------------------------------------------------------
+// M1: 프라이버시 게이트 서버 영속 + 사전 합의 서버 검증.
+// 설정은 sessions.metadata.privacy_settings(jsonb, 기존 필드)에 저장한다 — 마이그레이션 불필요.
+// 클라이언트 게이트(설정 페이지)는 UX 보조일 뿐, 합의 미확정 시 서버가 create/start 를 거부한다.
+// ------------------------------------------------------------
+
+const DisclosureEnum = z.enum(['participants', 'operators_only', 'public'])
+
+export type PrivacySettings = {
+  anonymousMode: boolean
+  disclosure: z.infer<typeof DisclosureEnum>
+  retentionDays: number
+  minorSession: boolean
+  consentConfirmed: boolean
+  minorConsent: boolean
+  updatedAt: string
+}
+
+const UpdateWorkshopSettingsInput = z.object({
+  sessionId: z.string(),
+  anonymousMode: z.boolean(),
+  disclosure: DisclosureEnum,
+  retentionDays: z.number().int().positive(),
+  minorSession: z.boolean(),
+  consentConfirmed: z.boolean(),
+  minorConsent: z.boolean().optional()
+})
+
+// 세션 metadata 에서 privacy_settings 를 안전하게 추출 (없거나 형태 불일치면 undefined).
+function readPrivacySettings(metadata: Record<string, unknown> | undefined): Partial<PrivacySettings> | undefined {
+  const ps = metadata?.privacy_settings
+  if (!ps || typeof ps !== 'object') return undefined
+  return ps as Partial<PrivacySettings>
+}
+
+// 사전 합의 서버 게이트 — consentConfirmed 미확정이면 워크숍 시작/생성 거부.
+// 미성년자 세션이면 법정대리인 동의(minorConsent)까지 확인 (§7-4).
+async function assertConsentConfirmed(ctx: ReturnType<typeof envelopeToCtx>, sessionId: string): Promise<void> {
+  const session = await sessions.findById(ctx, sessionId)
+  if (!session) throw new Error('delib: session not found')
+  const ps = readPrivacySettings(session.metadata)
+  if (!ps || ps.consentConfirmed !== true) {
+    throw new Error('delib: privacy consent not confirmed')
+  }
+  if (ps.minorSession === true && ps.minorConsent !== true) {
+    throw new Error('delib: minor guardian consent required')
+  }
+}
+
+// 운영자 전용 — 프라이버시/공개범위/보관기간/사전합의를 세션 metadata 에 영속화한다.
+export const updateWorkshopSettings: Handler = async ({ envelope }) => {
+  const input = UpdateWorkshopSettingsInput.parse(envelope.input)
+  const ctx = envelopeToCtx(envelope)
+  const session = await sessions.findById(ctx, input.sessionId)
+  if (!session) throw new Error('delib: session not found')
+  const privacy_settings: PrivacySettings = {
+    anonymousMode: input.anonymousMode,
+    disclosure: input.disclosure,
+    retentionDays: input.retentionDays,
+    minorSession: input.minorSession,
+    consentConfirmed: input.consentConfirmed,
+    minorConsent: input.minorConsent ?? false,
+    updatedAt: nowIso()
+  }
+  // 기존 metadata 다른 필드(capacity/tables 등)를 보존하며 privacy_settings 만 병합.
+  const nextMetadata = { ...(session.metadata ?? {}), privacy_settings }
+  await sessions.updateMetadata(ctx, input.sessionId, nextMetadata)
+  return { data: { sessionId: input.sessionId, privacySettings: privacy_settings }, summary: `workshop settings updated ${input.sessionId}` }
+}
 
 const CreateWorkshopInput = z.object({
   sessionId: z.string(),
@@ -17,9 +88,11 @@ const CreateWorkshopInput = z.object({
 
 // 워크숍 부트스트랩 — 세션의 오프닝 plenary 라운드(round_index 0)를 active 로 생성.
 // startRound 원자 경로 경유 — 기존 active 를 닫고 새 라운드를 active 로 (N-2, active 단일성 M-4).
+// M1: 사전 합의가 서버에 확정되지 않았으면 시작 불가.
 export const createWorkshop: Handler = async ({ envelope }) => {
   const input = CreateWorkshopInput.parse(envelope.input)
   const ctx = envelopeToCtx(envelope)
+  await assertConsentConfirmed(ctx, input.sessionId)
   const round = await delibRounds.startRound(ctx, {
     session_id: input.sessionId,
     round_index: 0,
@@ -88,9 +161,11 @@ const StartRoundInput = z.object({
 })
 
 // 라운드 시작 — 원자 연산 (M-4). 기존 active 를 closed 로 내리고 새 라운드를 active 로 삽입.
+// M1: 사전 합의가 서버에 확정되지 않았으면 라운드 시작 불가.
 export const startRound: Handler = async ({ envelope }) => {
   const input = StartRoundInput.parse(envelope.input)
   const ctx = envelopeToCtx(envelope)
+  await assertConsentConfirmed(ctx, input.sessionId)
   const round = await delibRounds.startRound(ctx, {
     session_id: input.sessionId,
     round_index: input.roundIndex,

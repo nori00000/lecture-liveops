@@ -18,6 +18,12 @@ export async function GET(req: Request) {
   const session = await sessions.findById(ctx, sessionId)
   if (!session) return NextResponse.json({ ok: false, error: 'session not found' }, { status: 404 })
 
+  // M4: 익명 모드 서버 반영 — 세션 metadata 의 privacy_settings.anonymousMode 가 true 면
+  // 콘솔 멤버 alias 를 display_alias(실명 가능) 대신 anon_handle 로 마스킹한다.
+  // participantId 는 대리입력(§7-7)에 필요하므로 유지한다.
+  const privacySettings = (session.metadata?.privacy_settings ?? undefined) as { anonymousMode?: boolean } | undefined
+  const anonymousMode = privacySettings?.anonymousMode === true
+
   const [rounds, groups, parts, allStatements] = await Promise.all([
     delibRounds.list(ctx, sessionId),
     delibGroups.list(ctx, sessionId),
@@ -34,10 +40,11 @@ export async function GET(req: Request) {
     topic: g.topic,
     members: memberships[i].map((m) => {
       const p = partById.get(m.participant_id)
-      return {
-        participantId: m.participant_id,
-        alias: p?.display_alias || p?.anon_handle || m.participant_id.slice(0, 6)
-      }
+      // 익명 모드: display_alias 를 노출하지 않고 anon_handle 만 사용.
+      const alias = anonymousMode
+        ? (p?.anon_handle || m.participant_id.slice(0, 6))
+        : (p?.display_alias || p?.anon_handle || m.participant_id.slice(0, 6))
+      return { participantId: m.participant_id, alias }
     })
   }))
 

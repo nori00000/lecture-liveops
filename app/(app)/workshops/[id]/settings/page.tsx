@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useEffect, useState } from 'react'
+import { use, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Badge, Button, Card, CardHeader, PageHeader, Select } from '@/components/ui/primitives'
 import { invoke } from '@/lib/util/envelope'
@@ -14,9 +14,8 @@ type Settings = {
 
 const DEFAULTS: Settings = { anonymous: false, disclosure: 'participants', retentionDays: '30', minorSession: false }
 
-// 설정은 현재 DB 영속 액션이 없어 로컬(localStorage)에 세션별로 보관한다.
-// (delib 액션은 1.5단계에서 하드닝 완료·읽기전용 — 설정 영속화는 신규 액션 필요, main 판단 대기)
-const storageKey = (sessionId: string) => `delib-settings:${sessionId}`
+// 프라이버시 설정 + 사전 합의는 서버(sessions.metadata.privacy_settings)에 영속된다.
+// 클라이언트 게이트(버튼 비활성)는 UX 보조일 뿐 — 합의 미확정 시 서버 create_workshop 이 거부한다(M1).
 
 export default function WorkshopSettingsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: sessionId } = use(params)
@@ -27,36 +26,40 @@ export default function WorkshopSettingsPage({ params }: { params: Promise<{ id:
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
 
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(storageKey(sessionId))
-      if (raw) setSettings({ ...DEFAULTS, ...JSON.parse(raw) })
-    } catch {
-      // 손상된 저장값 무시 — 기본값 유지
-    }
-  }, [sessionId])
-
   function update(patch: Partial<Settings>) {
-    setSettings((prev) => {
-      const next = { ...prev, ...patch }
-      try {
-        localStorage.setItem(storageKey(sessionId), JSON.stringify(next))
-      } catch {
-        // 저장 실패는 무시 (프라이빗 모드 등)
-      }
-      return next
-    })
+    setSettings((prev) => ({ ...prev, ...patch }))
   }
 
   // §7-4 프라이버시 사전 합의 게이트: 합의 없이는 시작 불가.
-  // 미성년자 세션이면 법정대리인 동의 확인까지 필요.
+  // 미성년자 세션이면 법정대리인 동의 확인까지 필요. (서버가 최종 판정 — 클라이언트는 보조)
   const consentSatisfied = consent && (!settings.minorSession || minorConsent)
+
+  // 현재 설정 + 사전합의를 서버에 영속. 합의 상태를 서버가 알아야 create/start 가 통과한다.
+  async function persistSettings() {
+    const res = await invoke({
+      action: 'delib.update_workshop_settings',
+      role: 'instructor',
+      scope: { sessionId },
+      input: {
+        sessionId,
+        anonymousMode: settings.anonymous,
+        disclosure: settings.disclosure,
+        retentionDays: Number(settings.retentionDays),
+        minorSession: settings.minorSession,
+        consentConfirmed: consentSatisfied,
+        minorConsent: settings.minorSession ? minorConsent : false
+      }
+    })
+    if (!res?.ok) throw new Error(res?.error ?? '설정 저장 실패')
+  }
 
   async function startWorkshop() {
     if (!consentSatisfied) return
     setBusy(true)
     setMessage('워크숍 시작 중...')
     try {
+      // 1) 설정 + 사전합의를 서버에 먼저 확정한다. 2) 서버 게이트를 통과한 create_workshop 실행.
+      await persistSettings()
       const res = await invoke({
         action: 'delib.create_workshop',
         role: 'instructor',
