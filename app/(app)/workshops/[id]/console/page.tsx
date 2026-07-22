@@ -41,7 +41,20 @@ type ConsoleData = {
   // Q1 근거 유형 분포 — 서버에서 k-익명 억제까지 마친 집계값 (개별 발언 태그는 내려오지 않는다).
   evidenceByRound?: EvidenceKindRoundBreakdown[]
   recording?: { active: boolean; consentAt: string | null; offsiteProcessing: boolean }
+  // Q2 검토 후보 — 콘솔 전용. 참가자 화면·프로젝터에는 절대 내려오지 않는다.
+  aiObservations?: AiObservationView
 }
+
+type AiObservationCandidate = {
+  id: string
+  statementId: string
+  roundId: string | null
+  kind: string
+  body: string
+  suggestedQuestion: string
+  statementBody: string
+}
+type AiObservationView = { pending: AiObservationCandidate[]; approvedCount: number; rejectedCount: number }
 
 // 콘솔 폴링 2~5초 (§3). 운영 조작 후엔 mutate()로 즉시 반영.
 const POLL_MS = 3000
@@ -114,6 +127,14 @@ export default function WorkshopConsolePage({ params }: { params: Promise<{ id: 
 
       {/* 결과 리포트 내려받기 — 절차 증빙형 납품물 (md/html/xlsx) */}
       <ReportDownload sessionId={sessionId} />
+
+      {/* Q2 검토 후보 — moderation 큐와 분리된 별도 패널 (품질 피드백 ≠ 제재) */}
+      <AiReviewPanel
+        view={data?.aiObservations}
+        busy={busy}
+        onCompute={() => run('delib.compute_ai_observations', { sessionId })}
+        onReview={(observationId, decision, reason) => run('delib.review_ai_observation', { observationId, decision, reason: reason || undefined })}
+      />
 
       {/* 투표 진행률 */}
       <Card>
@@ -314,6 +335,107 @@ function ReportDownload({ sessionId }: { sessionId: string }) {
           <Button size="sm" disabled={busy !== null} onClick={() => download('xlsx')}>{busy === 'xlsx' ? '생성 중…' : 'Excel'}</Button>
           {msg ? <span className="text-[11px] text-textDim">{msg}</span> : null}
         </div>
+      </div>
+    </Card>
+  )
+}
+
+// ── Q2 검토 후보 패널 (DELIBERATION-QUALITY-PLAN §2 Q2)
+// moderation 큐와 **구조적·시각적으로 분리**한다 — 품질 피드백이 제재로 보이면 안 된다(§3).
+// 참가자 화면·프로젝터에는 절대 렌더되지 않는다. 승인한 항목만 납품 리포트에 실린다.
+const AI_KIND_LABEL: Record<string, string> = {
+  evidence_check: '근거 확인 필요',
+  definition_mismatch: '용어 정의 불일치'
+}
+
+function AiReviewPanel({
+  view,
+  busy,
+  onCompute,
+  onReview
+}: {
+  view: AiObservationView | undefined
+  busy: boolean
+  onCompute: () => Promise<boolean>
+  onReview: (observationId: string, decision: 'approve' | 'reject', reason: string) => Promise<boolean>
+}) {
+  const pending = view?.pending ?? []
+  const [reasons, setReasons] = useState<Record<string, string>>({})
+  const [working, setWorking] = useState(false)
+
+  return (
+    <Card>
+      <CardHeader
+        title="검토 후보 (리포트용)"
+        hint={`대기 ${pending.length} · 승인 ${view?.approvedCount ?? 0} · 기각 ${view?.rejectedCount ?? 0}`}
+      />
+      <div className="p-4 space-y-3">
+        <p className="text-xs text-textMute">
+          세션 후 배치로 뽑은 &ldquo;근거 확인이 필요해 보이는 주장&rdquo; 초안입니다. 발언의 옳고 그름을 판정하지 않으며 개인·진영을 지칭하지 않습니다.
+          참가자 화면과 프로젝터에는 표시되지 않고, <strong>승인한 항목만</strong> 납품 리포트에 실립니다. 이 패널은 moderation(제재)과 무관합니다.
+        </p>
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            disabled={busy || working}
+            className={MOD_BTN_CLASS}
+            onClick={async () => {
+              setWorking(true)
+              await onCompute()
+              setWorking(false)
+            }}
+          >
+            {working ? '분석 중…' : '검토 후보 생성'}
+          </Button>
+        </div>
+        {pending.length === 0 ? (
+          <p className="text-sm text-textDim">검토 대기 중인 후보가 없습니다.</p>
+        ) : (
+          <ul className="space-y-2">
+            {pending.map((o) => (
+              <li key={o.id} className="rounded-md border border-border bg-bg p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Badge tone="info">{AI_KIND_LABEL[o.kind] ?? o.kind}</Badge>
+                  <span className="text-[11px] text-textMute">AI 초안 · 승인 전</span>
+                </div>
+                <p className="text-sm text-text break-words">{o.statementBody}</p>
+                <p className="text-xs text-textDim break-words">{o.body}</p>
+                {o.suggestedQuestion ? (
+                  <p className="text-xs text-text break-words">제안 질문: {o.suggestedQuestion}</p>
+                ) : null}
+                <label className="block">
+                  <span className="block text-[11px] text-textMute mb-1">기각 사유 <span className="text-textMute">(선택)</span></span>
+                  <Input
+                    value={reasons[o.id] ?? ''}
+                    onChange={(e) => setReasons((prev) => ({ ...prev, [o.id]: e.target.value }))}
+                    placeholder="예: 이미 근거가 제시된 주장"
+                    disabled={busy}
+                  />
+                </label>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button
+                    size="sm"
+                    disabled={busy}
+                    className={MOD_BTN_CLASS}
+                    onClick={() => onReview(o.id, 'reject', reasons[o.id] ?? '')}
+                  >
+                    기각
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="accent"
+                    disabled={busy}
+                    className={MOD_BTN_CLASS}
+                    onClick={() => onReview(o.id, 'approve', reasons[o.id] ?? '')}
+                  >
+                    승인 (리포트에 싣기)
+                  </Button>
+                </div>
+                <div className="text-[11px] text-textMute">원자료: statementId={o.statementId}</div>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </Card>
   )

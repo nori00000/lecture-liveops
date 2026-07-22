@@ -444,6 +444,31 @@ export const ModerationEventSchema = z.object({
   created_at: ts
 })
 
+// ============================================================
+// Q2 — 사후 리포트 "검토가 필요한 주장" 후보 (DELIBERATION-QUALITY-PLAN §2 Q2)
+// 참가자 대면 실시간 판정이 아니라 **세션 후 배치 + 퍼실리테이터 승인** 전제다.
+// kind 는 계획서 범위 2종만. status 는 pending → approved|rejected (approved 만 리포트에 실린다).
+// ============================================================
+export const AiObservationKindEnum = z.enum(['evidence_check', 'definition_mismatch'])
+export const AiObservationStatusEnum = z.enum(['pending', 'approved', 'rejected'])
+
+export const RoundAiObservationSchema = z.object({
+  id,
+  session_id: id,
+  round_id: z.string().nullable().default(null),
+  statement_id: id,
+  kind: AiObservationKindEnum,
+  body: z.string(),
+  suggested_question: z.string().default(''),
+  status: AiObservationStatusEnum.default('pending'),
+  reviewed_by: z.string().nullable().default(null),
+  reviewed_at: z.string().nullable().default(null),
+  // §5 지표(기각 사유 기록)용 — 선택 입력.
+  review_reason: z.string().default(''),
+  provider: z.string().default('stub'),
+  created_at: ts
+})
+
 export const ActionLedgerSchema = z.object({
   id,
   session_id: z.string().nullable().default(null),
@@ -498,6 +523,9 @@ export type ModerationState = z.infer<typeof ModerationStateEnum>
 export type VoteValue = z.infer<typeof VoteValueEnum>
 export type ModerationAction = z.infer<typeof ModerationActionEnum>
 export type EvidenceKind = z.infer<typeof EvidenceKindEnum>
+export type RoundAiObservation = z.infer<typeof RoundAiObservationSchema>
+export type AiObservationKind = z.infer<typeof AiObservationKindEnum>
+export type AiObservationStatus = z.infer<typeof AiObservationStatusEnum>
 
 export type Role = z.infer<typeof RoleEnum>
 export type Visibility = z.infer<typeof VisibilityEnum>

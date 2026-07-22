@@ -25,7 +25,7 @@ describe('permission matrix', () => {
     expect(isAllowed('liveops.nope', 'admin')).toBe(false);
   });
 
-  it('allActions() 등록 액션 45개 (liveops 34종 + delib 11종)', () => {
-    expect(allActions().length).toBe(45);
+  it('allActions() 등록 액션 47개 (liveops 34종 + delib 13종)', () => {
+    expect(allActions().length).toBe(47);
   });
 });

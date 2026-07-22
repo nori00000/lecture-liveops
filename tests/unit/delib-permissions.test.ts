@@ -42,8 +42,8 @@ describe('delib permission matrix', () => {
     }
   });
 
-  it('catalog 에 delib 액션 11종이 전부 등록되어 있다', () => {
+  it('catalog 에 delib 액션 13종이 전부 등록되어 있다 (Q2 검토 후보 2종 포함)', () => {
     const delibActions = listCatalog().filter((a) => a.startsWith('delib.'));
-    expect(delibActions.length).toBe(11);
+    expect(delibActions.length).toBe(13);
   });
 });

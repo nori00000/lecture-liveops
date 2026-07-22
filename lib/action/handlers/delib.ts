@@ -1,8 +1,9 @@
 import { z } from 'zod'
-import { sessions, participants, delibGroups, delibRounds, statements, votes, landscape } from '@/lib/db/repo'
+import { sessions, participants, delibGroups, delibRounds, statements, votes, landscape, aiObservations } from '@/lib/db/repo'
 import { RoundModeEnum, StatementVisibilityEnum, VoteValueEnum, ModerationActionEnum, EvidenceKindEnum } from '@/lib/db/schema'
 import { envelopeToCtx } from '../context'
 import { computeSnapshotPayload } from '@/lib/delib/metrics'
+import { analyzeStatements, assertProviderAllowed, resolveProvider } from '@/lib/delib/aiProvider'
 import { computeLandscape, landscapeUnavailable } from '@/lib/delib/landscapeMetrics'
 import { nowIso } from '@/lib/util/id'
 import type { Handler } from './types'
@@ -400,4 +401,84 @@ export const publishSnapshot: Handler = async ({ envelope }) => {
   const row = await landscape.publish(ctx, input.snapshotId)
   if (!row) throw new Error('snapshot not found')
   return { data: { snapshotId: row.id, publishedAt: row.published_at }, summary: `snapshot published ${row.id}` }
+}
+
+// ============================================================
+// Q2 — 사후 "검토가 필요한 주장" 후보 (DELIBERATION-QUALITY-PLAN §2 Q2 · §3)
+// computeSnapshot 과 **완전히 분리된 경로**다. computeSnapshot 은 현장에서 결과판을 띄우는
+// 동기 액션이므로 여기에 LLM 을 붙이면 진행이 멈춘다 (§3 v1 오류 정정).
+// 이 액션은 세션 후 배치로 호출되며, 실패해도 결과판·리포트는 AI 섹션 없이 정상 발행된다.
+// ============================================================
+
+const ComputeAiObservationsInput = z.object({
+  sessionId: z.string(),
+  roundId: z.string().optional(),
+  // 미지정이면 env(DELIB_AI_PROVIDER) → 기본 'stub'. stub 은 LLM 호출 0(API 비용 0).
+  provider: z.enum(['stub', 'local', 'external']).optional()
+})
+
+// operator 전용 (permissions). 후보는 전부 pending 으로 저장되고,
+// 퍼실리테이터가 승인한 것만 리포트에 실린다 — 참가자 화면·프로젝터에는 어떤 경로로도 나가지 않는다.
+export const computeAiObservations: Handler = async ({ envelope }) => {
+  const input = ComputeAiObservationsInput.parse(envelope.input)
+  const ctx = envelopeToCtx(envelope)
+  const session = await sessions.findById(ctx, input.sessionId)
+  if (!session) throw new Error('delib: session not found')
+  const provider = resolveProvider(input.provider)
+  // 오프사이트 처리 동의 게이트 — 동의(또는 env 설정) 없이 external 은 서버가 거부한다.
+  const { offsiteProcessing } = readRecordingConsent(session.metadata)
+  assertProviderAllowed(provider, { offsiteProcessing })
+
+  // 후보 대상은 visible 발언만 — hidden/flagged 는 집계와 마찬가지로 제외한다 (M-1).
+  const rows = await statements.list(ctx, input.sessionId, input.roundId, { visibleOnly: true })
+  // 재계산 시 미검토(pending) 후보만 정리한다. 승인·기각 이력은 감사 근거로 보존.
+  await aiObservations.deletePending(ctx, input.sessionId, input.roundId ?? null)
+
+  const candidates = await analyzeStatements({
+    provider,
+    offsiteProcessing,
+    statements: rows.map((s) => ({ id: s.id, body: s.body, evidenceKind: s.evidence_kind }))
+  })
+  const roundById = new Map(rows.map((s) => [s.id, s.round_id] as const))
+  // 이미 검토된(승인·기각) 조합은 다시 후보로 만들지 않는다 — 기각은 영구 제외이고,
+  // 재계산이 퍼실리테이터에게 같은 항목을 반복 제시하면 검토 피로만 늘어난다.
+  const reviewedKeys = new Set(
+    (await aiObservations.list(ctx, input.sessionId))
+      .filter((o) => o.status !== 'pending')
+      .map((o) => `${o.statement_id}:${o.kind}`)
+  )
+  const saved = await aiObservations.insertMany(
+    ctx,
+    candidates.filter((c) => !reviewedKeys.has(`${c.statementId}:${c.kind}`)).map((c) => ({
+      session_id: input.sessionId,
+      round_id: roundById.get(c.statementId) ?? input.roundId ?? null,
+      statement_id: c.statementId,
+      kind: c.kind,
+      body: c.body,
+      suggested_question: c.suggestedQuestion,
+      provider
+    }))
+  )
+  return {
+    data: { sessionId: input.sessionId, provider, analyzedCount: rows.length, candidateCount: saved.length },
+    summary: `ai observations computed ${saved.length}/${rows.length} (${provider})`
+  }
+}
+
+const ReviewAiObservationInput = z.object({
+  observationId: z.string(),
+  decision: z.enum(['approve', 'reject']),
+  // §5 지표(오탐 신고율) 실측용 — 선택 입력.
+  reason: z.string().optional()
+})
+
+// 퍼실리테이터 승인/기각. approved 만 리포트에 실리고, rejected 는 영구 제외된다.
+export const reviewAiObservation: Handler = async ({ envelope }) => {
+  const input = ReviewAiObservationInput.parse(envelope.input)
+  const ctx = envelopeToCtx(envelope)
+  const status = input.decision === 'approve' ? 'approved' : 'rejected'
+  // 검토 주체는 서버 authz 를 통과한 envelope.actor.role 만 기록한다 (개인 신원 미기록, N-5 준용).
+  const row = await aiObservations.review(ctx, input.observationId, status, envelope.actor.role, input.reason ?? '')
+  if (!row) throw new Error('delib: ai observation not found')
+  return { data: { observationId: row.id, status: row.status }, summary: `ai observation ${row.id} ${row.status}` }
 }

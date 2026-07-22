@@ -135,7 +135,10 @@ export const COLS = {
   statements: 'id, session_id, round_id, group_id, author_participant_id, body, visibility, moderation_state, created_at, evidence_kind',
   statement_votes: 'id, statement_id, participant_id, vote, created_at',
   landscape_snapshots: 'id, session_id, round_id, computed_at, payload, published_at',
-  moderation_events: 'id, statement_id, actor_role, action, reason, created_at'
+  moderation_events: 'id, statement_id, actor_role, action, reason, created_at',
+  // Q2 검토 후보 (0019). 컬럼 순서 = insert 값 순서.
+  round_ai_observations:
+    'id, session_id, round_id, statement_id, kind, body, suggested_question, status, reviewed_by, reviewed_at, review_reason, provider, created_at'
 } as const
 
 export function isoOrString(v: unknown): string {

@@ -9,7 +9,7 @@ import { clearSeatMarks, updateSeatMark, upsertSeatLayout, listSeatLayoutTemplat
 import { openCollaborativeExcel, updateExcelCell } from './handlers/excel'
 import { exportSessionArchive, syncExternalArchive } from './handlers/exports'
 import { createLectureSession, ingestRawNote, generateSituationSnapshot, deleteObservation, resolveObservation, updateObservation, updateSessionPhase, endSession, upsertMaterialVersion, listSessionDashboard } from './handlers/liveops'
-import { updateWorkshopSettings, createWorkshop, registerParticipant, upsertGroup, assignParticipant, startRound, submitStatement, moderateStatement, voteStatement, computeSnapshot, publishSnapshot } from './handlers/delib'
+import { updateWorkshopSettings, createWorkshop, registerParticipant, upsertGroup, assignParticipant, startRound, submitStatement, moderateStatement, voteStatement, computeSnapshot, publishSnapshot, computeAiObservations, reviewAiObservation } from './handlers/delib'
 
 export const CATALOG: Record<string, Handler> = {
   'liveops.get_today_session': getTodaySession,
@@ -56,7 +56,10 @@ export const CATALOG: Record<string, Handler> = {
   'delib.moderate_statement': moderateStatement,
   'delib.vote_statement': voteStatement,
   'delib.compute_snapshot': computeSnapshot,
-  'delib.publish_snapshot': publishSnapshot
+  'delib.publish_snapshot': publishSnapshot,
+  // Q2 — 사후 검토 후보 (compute_snapshot 과 분리된 비동기 경로, §3)
+  'delib.compute_ai_observations': computeAiObservations,
+  'delib.review_ai_observation': reviewAiObservation
 }
 
 export function listCatalog(): string[] {

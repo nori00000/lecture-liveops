@@ -48,7 +48,10 @@ const MATRIX: Record<string, Role[]> = {
   'delib.moderate_statement': ['admin', 'instructor', 'assistant'],
   'delib.vote_statement': ['admin', 'instructor', 'assistant', 'participant'],
   'delib.compute_snapshot': ['admin', 'instructor', 'assistant'],
-  'delib.publish_snapshot': ['admin', 'instructor', 'assistant']
+  'delib.publish_snapshot': ['admin', 'instructor', 'assistant'],
+  // Q2 검토 후보 — operator 전용. participant 는 존재조차 알 수 없다(§2 Q2: 참가자 대면 노출 금지).
+  'delib.compute_ai_observations': ['admin', 'instructor', 'assistant'],
+  'delib.review_ai_observation': ['admin', 'instructor', 'assistant']
 }
 
 export function isAllowed(action: string, role: Role): boolean {

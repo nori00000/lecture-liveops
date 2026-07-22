@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { sessions, delibRounds, delibGroups, participants, statements, votes, landscape } from '@/lib/db/repo'
+import { sessions, delibRounds, delibGroups, participants, statements, votes, landscape, aiObservations } from '@/lib/db/repo'
 import { adminContext } from '@/lib/db/neonHelpers'
 import { toConsoleCard } from '@/lib/delib/views'
 import { computeEvidenceKindByRound } from '@/lib/delib/metrics'
@@ -81,6 +81,36 @@ export async function GET(req: Request) {
   const activeRound = rounds.find((r) => r.status === 'active') ?? null
   const snaps = await landscape.list(ctx, sessionId)
 
+  // Q2 검토 후보 — **콘솔(operator)에만** 내려보낸다. 참가자/프로젝터 라우트에는 절대 넣지 않는다.
+  // moderation 큐와 분리된 별도 필드다 (품질 피드백이 제재로 보이면 안 됨, §3).
+  // AI 는 크리티컬 패스가 아니므로 조회 실패해도 콘솔 나머지는 정상 렌더된다.
+  const bodyById = new Map(allStatements.map((s) => [s.id, s] as const))
+  let aiObservationView: {
+    pending: Array<{ id: string; statementId: string; roundId: string | null; kind: string; body: string; suggestedQuestion: string; statementBody: string }>
+    approvedCount: number
+    rejectedCount: number
+  } = { pending: [], approvedCount: 0, rejectedCount: 0 }
+  try {
+    const all = await aiObservations.list(ctx, sessionId)
+    aiObservationView = {
+      pending: all
+        .filter((o) => o.status === 'pending')
+        .map((o) => ({
+          id: o.id,
+          statementId: o.statement_id,
+          roundId: o.round_id,
+          kind: o.kind,
+          body: o.body,
+          suggestedQuestion: o.suggested_question,
+          statementBody: bodyById.get(o.statement_id)?.body ?? '(원 발언을 찾을 수 없음)'
+        })),
+      approvedCount: all.filter((o) => o.status === 'approved').length,
+      rejectedCount: all.filter((o) => o.status === 'rejected').length
+    }
+  } catch (e) {
+    console.error(`[delib-console] ai observations unavailable: ${e instanceof Error ? e.name : 'unknown'}`)
+  }
+
   return NextResponse.json({
     ok: true,
     session: { id: session.id, title: session.title, date: session.date },
@@ -95,6 +125,8 @@ export async function GET(req: Request) {
     evidenceByRound,
     // 녹음·전사 동의 상태 — 콘솔 "녹음 중" 상시 배너 조건 (transcript-architecture §4).
     recording: readRecordingConsent(session.metadata),
+    // Q2 검토 후보 (operator 전용 — 참가자 화면·프로젝터에는 어떤 경로로도 나가지 않는다).
+    aiObservations: aiObservationView,
     snapshots: snaps.map((s) => ({ id: s.id, roundId: s.round_id, computedAt: s.computed_at, publishedAt: s.published_at }))
   })
 }

@@ -6,7 +6,7 @@
 
 import ExcelJS from 'exceljs'
 import type { ExportFile } from '@/lib/export/markdown'
-import type { WorkshopReport, ReportRound, ReportResultItem, ReportRawStatement, ReportLandscape } from './report'
+import type { WorkshopReport, ReportRound, ReportResultItem, ReportRawStatement, ReportLandscape, ReportAiObservation } from './report'
 import type { EvidenceKindBreakdown, EvidenceKindDistribution } from './metrics'
 
 const DISCLOSURE_LABEL: Record<string, string> = {
@@ -53,6 +53,17 @@ function evidenceLine(d: EvidenceKindDistribution): string {
   if (d.suppressed) return EVIDENCE_SUPPRESSED_TEXT
   if (d.total === 0) return '집계 대상 발언 없음'
   return EVIDENCE_ORDER.map((o) => `${o.label} ${d.counts[o.key]}건(${pct(d.ratios[o.key])})`).join(' · ') + ` — 총 ${d.total}건`
+}
+
+// Q2 검토가 필요한 주장 — AI 생성물 라벨(§7-5) + 승인 절차를 납품물에도 명시한다.
+const AI_OBS_NOTE =
+  'AI가 자동으로 뽑은 초안을 퍼실리테이터가 검토해 **승인한 항목만** 실었습니다. ' +
+  '발언의 옳고 그름을 판정한 것이 아니라 "근거를 더 확인해볼 지점"을 표시한 것이며, 개인·진영을 지칭하지 않습니다. ' +
+  '워크숍 진행 중 참가자에게는 표시되지 않았습니다.'
+
+const AI_OBS_KIND_LABEL: Record<ReportAiObservation['kind'], string> = {
+  evidence_check: '근거 확인 필요',
+  definition_mismatch: '용어 정의 불일치'
 }
 
 const CLUSTER_LABELS = ['가', '나', '다', '라', '마']
@@ -210,11 +221,31 @@ export function planDelibMarkdownExport(report: WorkshopReport): ExportFile[] {
       : '| statementId | roundId | 작성자 | 상태 | 집계 | 내용 |\n|---|---|---|---|---|---|\n' +
         report.rawData.map(mdRawRow).join('\n') + '\n')
 
+  // Q2: 승인된 항목이 0건이면 섹션(파일) 자체를 만들지 않는다 — 빈 섹션은 납품물에 넣지 않는다.
+  const aiObs = report.aiObservations.length === 0
+    ? []
+    : [{
+        name: '04-검토가-필요한-주장.md',
+        content:
+          `# 검토가 필요한 주장 (AI 초안 · 퍼실리테이터 승인)\n\n` +
+          `> ${AI_OBS_NOTE}\n\n` +
+          report.aiObservations
+            .map((o) =>
+              `## ${AI_OBS_KIND_LABEL[o.kind]}\n` +
+              `- 원 발언: ${o.statementBody.replace(/\n/g, ' ')}\n` +
+              `- 관찰: ${o.body}\n` +
+              (o.suggestedQuestion ? `- 제안 질문: ${o.suggestedQuestion}\n` : '') +
+              `- 원자료: statementId=\`${o.statementId}\` · roundId=\`${o.roundId ?? '-'}\`\n`
+            )
+            .join('\n')
+      }]
+
   return [
     { name: '00-리포트-개요.md', content: overview },
     { name: '01-라운드별-결과.md', content: rounds },
     { name: '02-moderation-내역.md', content: moderation },
-    { name: '03-원자료.md', content: raw }
+    { name: '03-원자료.md', content: raw },
+    ...aiObs
   ]
 }
 
@@ -361,6 +392,20 @@ export function planDelibHtmlExport(report: WorkshopReport): string {
         })
         .join('')
 
+  // Q2: 승인 0건이면 섹션 자체를 렌더하지 않는다 (빈 표·빈 제목 없음).
+  const aiObsHtml = report.aiObservations.length === 0
+    ? ''
+    : `<h2>검토가 필요한 주장 <span class="ai-tag">AI 초안 · 퍼실리테이터 승인</span></h2>\n` +
+      `<p class="note">${esc(AI_OBS_NOTE.replace(/\*\*/g, ''))}</p>\n` +
+      `<ul class="results">${report.aiObservations
+        .map((o) =>
+          `<li><div class="body">${esc(o.statementBody)}</div>` +
+          `<div class="meta">${esc(AI_OBS_KIND_LABEL[o.kind])} — ${esc(o.body)}</div>` +
+          (o.suggestedQuestion ? `<div class="meta">제안 질문: ${esc(o.suggestedQuestion)}</div>` : '') +
+          `<div class="trace">statementId=<code>${esc(o.statementId)}</code> · roundId=<code>${esc(o.roundId ?? '-')}</code></div></li>`
+        )
+        .join('')}</ul>\n`
+
   return `<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
@@ -387,6 +432,7 @@ export function planDelibHtmlExport(report: WorkshopReport): string {
   th { background: rgba(0,0,0,0.04); }
   .empty { color: #999; font-style: italic; }
   .warn { color: #8a5b00; background: #fff6e0; border: 1px solid #e8c97a; border-radius: 4px; padding: 6px 10px; margin: 6px 0; font-size: 0.85rem; }
+  .ai-tag { font-size: 0.7rem; font-weight: 500; color: #3a5a8a; background: #eaf1fb; border: 1px solid #c3d6f0; border-radius: 999px; padding: 2px 8px; vertical-align: middle; }
 </style></head>
 <body>
 <h1>${esc(o.title)} — 숙의 워크숍 결과 리포트</h1>
@@ -419,6 +465,7 @@ ${roundsHtml}
 <p class="note">총 ${report.moderation.total}건 (신고 ${report.moderation.byAction.flag} · 숨김 ${report.moderation.byAction.hide} · 복원 ${report.moderation.byAction.restore} · 승인 ${report.moderation.byAction.approve})</p>
 <table><thead><tr><th>시각</th><th>발언</th><th>조치</th><th>주체</th><th>사유</th></tr></thead><tbody>${modRows}</tbody></table>
 
+${aiObsHtml}
 <h2>원자료 (statement 별 집계)</h2>
 <p class="note">k-익명 억제된 발언은 "표본 부족"으로 표기됩니다. 개인 표는 포함하지 않습니다.</p>
 <table><thead><tr><th>statementId</th><th>roundId</th><th>작성자</th><th>상태</th><th>집계</th><th>내용</th></tr></thead><tbody>${rawRows}</tbody></table>
@@ -590,6 +637,30 @@ export async function planDelibXlsxBuffer(report: WorkshopReport): Promise<Buffe
     }
     push('라운드 전체', r.evidenceKind.overall)
     for (const g of r.evidenceKind.byGroup) push(`그룹 ${g.groupId}`, g.distribution)
+  }
+
+  // 시트 (조건부): 검토가 필요한 주장 — 승인된 항목이 있을 때만 시트를 만든다.
+  if (report.aiObservations.length > 0) {
+    const ai = wb.addWorksheet('검토가 필요한 주장')
+    ai.columns = [
+      { header: '유형', key: 'kind', width: 16 },
+      { header: '원 발언', key: 'statementBody', width: 50 },
+      { header: '관찰(AI 초안)', key: 'body', width: 46 },
+      { header: '제안 질문', key: 'question', width: 40 },
+      { header: 'statementId', key: 'statementId', width: 16 },
+      { header: 'roundId', key: 'roundId', width: 16 }
+    ]
+    ai.addRow({ kind: '안내', statementBody: AI_OBS_NOTE.replace(/\*\*/g, ''), body: '', question: '', statementId: '-', roundId: '-' })
+    for (const o of report.aiObservations) {
+      ai.addRow({
+        kind: AI_OBS_KIND_LABEL[o.kind],
+        statementBody: o.statementBody,
+        body: o.body,
+        question: o.suggestedQuestion,
+        statementId: o.statementId,
+        roundId: o.roundId ?? '-'
+      })
+    }
   }
 
   // 시트 5: moderation 내역

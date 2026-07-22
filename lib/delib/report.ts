@@ -10,7 +10,7 @@
 //  - 결과 섹션은 발행된(published) 스냅샷이 있으면 그 저장 payload 를 신뢰한다 (F3). 발행 시점 집계와 리포트가 어긋나지 않게 한다.
 
 import type { RlsContext } from '@/lib/db/neonHelpers'
-import { sessions, participants, delibRounds, statements, votes, landscape } from '@/lib/db/repo'
+import { sessions, participants, delibRounds, statements, votes, landscape, aiObservations } from '@/lib/db/repo'
 import {
   computeSnapshotPayload,
   computeEvidenceKindDistribution,
@@ -28,7 +28,24 @@ import {
   type PermutationTest,
   type SnapshotPayloadWithLandscape
 } from './landscapeMetrics'
-import type { RoundMode, RoundStatus, ModerationState, ModerationAction, Role, LandscapeSnapshot } from '@/lib/db/schema'
+import type { RoundMode, RoundStatus, ModerationState, ModerationAction, Role, LandscapeSnapshot, AiObservationKind } from '@/lib/db/schema'
+
+// Q2: 리포트에 실리는 "검토가 필요한 주장" 1건 (DELIBERATION-QUALITY-PLAN §2 Q2).
+// **퍼실리테이터가 승인(approved)한 것만** 여기에 들어온다 — pending/rejected 는 영구 제외.
+// AI 생성물임을 라벨로 명시하고(§7-5), 원 statementId 로 되짚을 수 있게 한다(traceability).
+export type ReportAiObservation = {
+  observationId: string
+  statementId: string
+  roundId: string | null
+  kind: AiObservationKind
+  // "근거 확인이 필요해 보입니다" 톤의 관찰 문구. 개인·진영 라벨 없음.
+  body: string
+  suggestedQuestion: string
+  // 원 발언 본문 (숨김 처리된 발언은 애초에 이 섹션에 오지 않는다).
+  statementBody: string
+  reviewedAt: string | null
+  provider: string
+}
 
 // 결과 항목 — consensus/divisive/minority 랭킹 1건. 원 statementId/roundId 로 되짚을 수 있다 (traceability).
 export type ReportResultItem = {
@@ -158,6 +175,8 @@ export type WorkshopReport = {
   rounds: ReportRound[]
   moderation: ReportModeration
   rawData: ReportRawStatement[]
+  // Q2: 승인된 "검토가 필요한 주장"만. 0건이면 빈 배열이고 포맷터는 섹션 자체를 넣지 않는다.
+  aiObservations: ReportAiObservation[]
 }
 
 // StatementMetric → ReportResultItem. body/round/group 은 발언 메타에서 채운다.
@@ -395,6 +414,32 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
   }
   events.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 
+  // ── Q2: 승인된 검토 후보. AI 는 크리티컬 패스가 아니다 —
+  // 조회가 실패해도 리포트는 AI 섹션 없이 정상 발행된다 (§3).
+  const statementById = new Map(allStatements.map((s) => [s.id, s] as const))
+  let reportAiObservations: ReportAiObservation[] = []
+  try {
+    const approved = await aiObservations.list(ctx, sessionId, { status: 'approved' })
+    reportAiObservations = approved.flatMap((o) => {
+      const s = statementById.get(o.statement_id)
+      // 승인 후에 숨김 처리된 발언은 싣지 않는다 (F1 마스킹 원칙과 동일).
+      if (!s || s.moderation_state === 'hidden') return []
+      return [{
+        observationId: o.id,
+        statementId: o.statement_id,
+        roundId: o.round_id ?? s.round_id,
+        kind: o.kind,
+        body: o.body,
+        suggestedQuestion: o.suggested_question,
+        statementBody: s.body,
+        reviewedAt: o.reviewed_at,
+        provider: o.provider
+      }]
+    })
+  } catch (e) {
+    console.error(`[delib-report] ai observations unavailable: ${e instanceof Error ? e.name : 'unknown'}`)
+  }
+
   return {
     overview: {
       sessionId: session.id,
@@ -409,6 +454,7 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
     procedure,
     rounds: reportRounds,
     moderation: { total: events.length, byAction, events },
-    rawData
+    rawData,
+    aiObservations: reportAiObservations
   }
 }

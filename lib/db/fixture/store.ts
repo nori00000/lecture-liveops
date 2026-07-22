@@ -27,7 +27,8 @@ import type {
   Statement,
   StatementVote,
   LandscapeSnapshot,
-  ModerationEvent
+  ModerationEvent,
+  RoundAiObservation
 } from '../schema'
 
 import {
@@ -81,6 +82,8 @@ type Store = {
   statement_votes: StatementVote[]
   landscape_snapshots: LandscapeSnapshot[]
   moderation_events: ModerationEvent[]
+  // Q2 검토 후보 (DELIBERATION-QUALITY-PLAN §2 Q2) — operator 전용.
+  round_ai_observations: RoundAiObservation[]
   revision: number
 }
 
@@ -119,6 +122,7 @@ function initStore(): Store {
     statement_votes: [],
     landscape_snapshots: [],
     moderation_events: [],
+    round_ai_observations: [],
     revision: 1
   }
 }
