@@ -1,6 +1,8 @@
 // Lecture LiveOps — 숙의 스냅샷 지표 (deliberation metrics)
 // PRODUCT-PLAN-v2 §3: 합의 강도·찬반유보율·그룹 간 편차·소수의견 flag.
-// 명시적 금지: PCA/K-means 클러스터링 (§3 명시적 제외). 여기 있는 건 전부 결정적 집계·랭킹뿐.
+// 이 모듈은 결정적 집계·랭킹만 담당한다. PCA/K-means 클러스터링은 MVP 범위에서 제외했던 항목이라
+// 여기에 섞지 않고 Post-MVP B 에서 별도 모듈(lib/delib/clustering.ts, landscapeMetrics.ts)로 분리했다.
+// 클러스터링은 순수 추가 레이어이며 아래 consensus/divisive/minority 동작에 영향을 주지 않는다.
 
 import type { VoteValue } from '@/lib/db/schema'
 

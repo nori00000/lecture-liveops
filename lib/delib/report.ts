@@ -11,7 +11,8 @@
 
 import type { RlsContext } from '@/lib/db/neonHelpers'
 import { sessions, participants, delibRounds, statements, votes, landscape } from '@/lib/db/repo'
-import { computeSnapshotPayload, type StatementMetric, type MinorityFlag, type SnapshotPayload } from './metrics'
+import { computeSnapshotPayload, type StatementMetric, type MinorityFlag } from './metrics'
+import { landscapeReasonText, type LandscapeResult, type SnapshotPayloadWithLandscape } from './landscapeMetrics'
 import type { RoundMode, RoundStatus, ModerationState, ModerationAction, Role, LandscapeSnapshot } from '@/lib/db/schema'
 
 // 결과 항목 — consensus/divisive/minority 랭킹 1건. 원 statementId/roundId 로 되짚을 수 있다 (traceability).
@@ -31,6 +32,21 @@ export type ReportResultItem = {
   margin?: number
 }
 
+// Post-MVP B: 라운드별 의견 지형 요약. 발행 스냅샷 payload.landscape 를 리포트용으로 옮긴 것.
+// 좌표(projection)는 리포트에 싣지 않는다 — 클러스터 규모·GIC·대표의견만 (납품물에 산점도 좌표는 불필요).
+export type ReportLandscape = {
+  enabled: boolean
+  // 비활성 사유 문구 (활성이면 없음).
+  reasonText?: string
+  participantCount: number
+  eligibleCount: number
+  k: number
+  silhouette: number
+  clusters: Array<{ id: number; size: number }>
+  gic: Array<{ statementId: string; body: string; score: number }>
+  representatives: Array<{ clusterId: number; statementId: string; body: string; lift: number; agreeRate: number }>
+}
+
 export type ReportRound = {
   roundId: string
   roundIndex: number
@@ -47,6 +63,8 @@ export type ReportRound = {
   computedAt: string
   publishedAt: string | null
   published: boolean
+  // 의견 지형 — 발행 스냅샷에 계산 결과가 있을 때만. 없으면 null(미계산).
+  landscape: ReportLandscape | null
 }
 
 // 원자료 섹션의 발언 1건 — statement 별 집계(개인 표 없음). k-익명 억제·익명 마스킹 반영.
@@ -123,6 +141,33 @@ function toResultItem(
     consensusScore: m.consensusScore,
     divisiveScore: m.divisiveScore,
     ...('margin' in m ? { margin: m.margin } : {})
+  }
+}
+
+// 스냅샷 payload.landscape → 리포트용 요약. 좌표는 버리고 규모·GIC·대표의견만 남긴다.
+function toReportLandscape(ls: LandscapeResult | undefined, bodyById: Map<string, string>): ReportLandscape | null {
+  if (!ls) return null
+  const base = {
+    participantCount: ls.participantCount,
+    eligibleCount: ls.eligibleCount,
+    k: ls.k,
+    silhouette: ls.silhouette,
+    clusters: (ls.clusters ?? []).map((c) => ({ id: c.id, size: c.size }))
+  }
+  if (!ls.enabled) {
+    return { enabled: false, reasonText: landscapeReasonText(ls), ...base, gic: [], representatives: [] }
+  }
+  return {
+    enabled: true,
+    ...base,
+    gic: (ls.gic ?? []).map((g) => ({ statementId: g.statementId, body: bodyById.get(g.statementId) ?? '', score: g.score })),
+    representatives: (ls.representatives ?? []).map((r) => ({
+      clusterId: r.clusterId,
+      statementId: r.statementId,
+      body: bodyById.get(r.statementId) ?? '',
+      lift: r.lift,
+      agreeRate: r.agreeRate
+    }))
   }
 }
 
@@ -214,7 +259,7 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
     const published = publishedByRound.get(r.id)
     if (published) {
       // 발행 스냅샷 저장값 신뢰 (computeSnapshotPayload 와 동일 계산이므로 재집계하지 않는다).
-      const payload = published.payload as unknown as SnapshotPayload
+      const payload = published.payload as unknown as SnapshotPayloadWithLandscape
       return {
         roundId: r.id,
         roundIndex: r.round_index,
@@ -228,7 +273,8 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
         snapshotId: published.id,
         computedAt: published.computed_at,
         publishedAt: published.published_at,
-        published: true
+        published: true,
+        landscape: toReportLandscape(payload.landscape, bodyById)
       }
     }
     // 미발행 라운드 — 리포트 생성 시점에 현재 visible 발언으로 재집계 (hidden/flagged 제외, M-1).
@@ -250,7 +296,10 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
       snapshotId: null,
       computedAt: generatedAt,
       publishedAt: null,
-      published: false
+      published: false,
+      // 의견 지형은 스냅샷 계산 시점(개인 표 행렬 접근 경로)에서만 만들어진다.
+      // 리포트 생성 시점 재집계 경로에서는 개인 표를 읽지 않으므로 null(미계산).
+      landscape: null
     }
   })
 

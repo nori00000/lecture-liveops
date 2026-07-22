@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { sessions, landscape, statements } from '@/lib/db/repo'
 import { adminContext } from '@/lib/db/neonHelpers'
-import type { SnapshotPayload } from '@/lib/delib/metrics'
+import type { SnapshotPayloadWithLandscape } from '@/lib/delib/landscapeMetrics'
 
 // 프로젝터 결과판 데이터 — 발표용 스냅샷 스냅샷(consensus/divisive/소수의견).
 // 이미 publish 된 스냅샷의 집계 payload 만 노출한다(개인 표 없음, k-익명 억제는 metrics 에서 적용됨).
@@ -32,11 +32,20 @@ export async function GET(req: Request) {
 
   // M3: 결과판은 랭킹(consensus/divisive/minority)에 실제 표시되는 발언 원문만 내려보낸다.
   // suppressed(k-익명 억제)·랭킹 미표시 발언의 원문은 payload 로 새어나가지 않게 allowlist 로 제외한다.
-  const payload = latestPublished.payload as unknown as SnapshotPayload
+  const payload = latestPublished.payload as unknown as SnapshotPayloadWithLandscape
+  // 의견 지형(landscape)의 GIC/대표의견도 화면에 원문이 필요하므로 allowlist 에 포함한다.
+  // landscape.projection 은 익명 좌표만 담고 participantId 가 없으므로 그대로 내보낸다.
+  const landscapeIds = payload.landscape?.enabled
+    ? [
+        ...(payload.landscape.gic ?? []).map((g) => g.statementId),
+        ...(payload.landscape.representatives ?? []).map((r) => r.statementId)
+      ]
+    : []
   const shownIds = new Set<string>([
     ...(payload.consensus ?? []).map((m) => m.statementId),
     ...(payload.divisive ?? []).map((m) => m.statementId),
-    ...(payload.minority ?? []).map((m) => m.statementId)
+    ...(payload.minority ?? []).map((m) => m.statementId),
+    ...landscapeIds
   ])
   const visible = await statements.list(ctx, sessionId, latestPublished.round_id ?? undefined, { visibleOnly: true })
   const statementBodies: Record<string, string> = {}

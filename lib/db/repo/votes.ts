@@ -90,5 +90,25 @@ export const votes = {
       return rows.map(toVote)
     }
     return getStore().statement_votes.filter((v) => v.statement_id === statementId)
+  },
+  // 의견 지형(클러스터링) 전용 투표행렬 소스 — participant×statement 표를 서버 메모리 안에서만 쓴다.
+  // 반환값(개인 표)은 절대 응답/스냅샷 payload 에 실으면 안 된다. computeLandscape 의 입력으로만 사용할 것.
+  //
+  // 접근 불가 시 null 을 돌려준다 (빈 배열이 아니라) — 빈 행렬로 조용히 "클러스터 없음"을 만들지 않기 위해.
+  //  - Neon 모드: statement_votes raw select 는 RLS(ax_delib_votes_admin_read)로 admin 만 허용된다.
+  //    instructor/assistant 는 select 가 0행을 반환할 뿐 에러가 아니므로, 여기서 명시적으로 null 을 반환한다.
+  //    (instructor 경로에서도 지형을 계산하려면 delib_vote_tally 처럼 세션 필터가 붙은
+  //     SECURITY DEFINER 함수가 필요하다 — 마이그레이션 사안이라 이번 범위 밖.)
+  //  - fixture 모드: 운영자 역할(admin/instructor/assistant)에 한해 허용.
+  async matrixForClustering(ctx: RlsContext, statementIds: string[]): Promise<StatementVote[] | null> {
+    if (statementIds.length === 0) return []
+    if (isNeonEnabled()) {
+      if (ctx.role !== 'admin') return null
+      const rows = await query(ctx, `select ${COLS.statement_votes} from statement_votes where statement_id = any($1)`, [statementIds])
+      return rows.map(toVote)
+    }
+    if (ctx.role !== 'admin' && ctx.role !== 'instructor' && ctx.role !== 'assistant') return null
+    const ids = new Set(statementIds)
+    return getStore().statement_votes.filter((v) => ids.has(v.statement_id))
   }
 }

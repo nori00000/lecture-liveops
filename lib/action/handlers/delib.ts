@@ -3,6 +3,7 @@ import { sessions, participants, delibGroups, delibRounds, statements, votes, la
 import { RoundModeEnum, StatementVisibilityEnum, VoteValueEnum, ModerationActionEnum } from '@/lib/db/schema'
 import { envelopeToCtx } from '../context'
 import { computeSnapshotPayload } from '@/lib/delib/metrics'
+import { computeLandscape, landscapeUnavailable } from '@/lib/delib/landscapeMetrics'
 import { nowIso } from '@/lib/util/id'
 import type { Handler } from './types'
 
@@ -298,12 +299,27 @@ export const computeSnapshot: Handler = async ({ envelope }) => {
     rows.map((s) => ({ id: s.id, group_id: s.group_id })),
     tallies
   )
+  // Post-MVP B: 의견 지형(클러스터링) 레이어. 기존 랭킹은 그대로 두고 landscape 필드만 덧붙인다.
+  // 마이그레이션 불필요 — landscape_snapshots.payload 는 jsonb.
+  // 개인 표 행렬은 여기(서버 메모리)에서만 쓰이고 payload 에는 익명 좌표/집계만 담긴다 (거버넌스 §7-2).
+  const parts = await participants.list(ctx, input.sessionId)
+  const voteRows = await votes.matrixForClustering(ctx, ids)
+  const landscapeResult = voteRows == null
+    ? landscapeUnavailable(parts.length)
+    : computeLandscape({
+        votes: voteRows.map((v) => ({ participantId: v.participant_id, statementId: v.statement_id, vote: v.vote })),
+        statementIds: ids,
+        participantIds: parts.map((p) => p.id)
+      })
   const snapshot = await landscape.compute(ctx, {
     session_id: input.sessionId,
     round_id: input.roundId ?? null,
-    payload: payload as unknown as Record<string, unknown>
+    payload: { ...payload, landscape: landscapeResult } as unknown as Record<string, unknown>
   })
-  return { data: { snapshotId: snapshot.id, statementCount: ids.length }, summary: `snapshot computed ${snapshot.id}` }
+  return {
+    data: { snapshotId: snapshot.id, statementCount: ids.length, landscapeEnabled: landscapeResult.enabled },
+    summary: `snapshot computed ${snapshot.id}`
+  }
 }
 
 const PublishSnapshotInput = z.object({

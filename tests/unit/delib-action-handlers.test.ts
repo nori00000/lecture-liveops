@@ -26,7 +26,7 @@ import {
   computeSnapshot,
   publishSnapshot
 } from '@/lib/action/handlers/delib';
-import { votes } from '@/lib/db/repo';
+import { votes, landscape } from '@/lib/db/repo';
 import { adminContext } from '@/lib/db/neonHelpers';
 import { resetStore } from '@/lib/db/fixture/store';
 import type { AxActionEnvelope } from '@/lib/action/envelope';
@@ -181,6 +181,48 @@ describe('delib action handlers (fixture mode)', () => {
     expect((snap.data as { statementCount: number }).statementCount).toBe(1);
     const pub = await publishSnapshot({ envelope: env('delib.publish_snapshot', 'instructor', { snapshotId: snapId }) });
     expect((pub.data as { publishedAt: string | null }).publishedAt).toBeTruthy();
+  });
+
+  // Post-MVP B: 스냅샷 payload 에 의견 지형(landscape)이 함께 저장된다.
+  // 소규모 세션(참가자 60명 미만)은 비활성 + 사유가 남아야 한다 — "왜 없는지"도 절차 증빙.
+  it('computeSnapshot — 소규모 세션은 landscape 비활성 + 사유 기록', async () => {
+    const stId = await newStatement();
+    const p1 = await newParticipant('p1');
+    await voteStatement({ envelope: env('delib.vote_statement', 'participant', { statementId: stId, vote: 'agree' }), trusted: { participantId: p1 } });
+    const snap = await computeSnapshot({ envelope: env('delib.compute_snapshot', 'instructor', { sessionId: SID }) });
+    expect((snap.data as { landscapeEnabled: boolean }).landscapeEnabled).toBe(false);
+    const stored = await landscape.findById(adminContext(SID), (snap.data as { snapshotId: string }).snapshotId);
+    const payload = stored!.payload as { landscape?: { enabled: boolean; reason?: string }; consensus?: unknown[] };
+    expect(payload.landscape?.enabled).toBe(false);
+    expect(payload.landscape?.reason).toBe('participants_below_minimum');
+    // 기존 랭킹은 그대로 유지 (클러스터링은 추가 레이어).
+    expect(Array.isArray(payload.consensus)).toBe(true);
+  });
+
+  // 100명 규모 — 실제 액션 경로(개인 표 행렬 → 클러스터링)로 landscape 가 활성화된다.
+  it('computeSnapshot — 100명 세션은 landscape 활성 + 개인 식별정보 미포함', async () => {
+    const statementIds: string[] = [];
+    for (let j = 0; j < 8; j += 1) statementIds.push(await newStatement());
+    const participantIds: string[] = [];
+    for (let i = 0; i < 100; i += 1) participantIds.push(await newParticipant(`p${i}`));
+    for (let i = 0; i < participantIds.length; i += 1) {
+      for (let j = 0; j < statementIds.length; j += 1) {
+        const agree = j === 0 ? true : (i % 2 === 0) === (j % 2 === 0);
+        await voteStatement({
+          envelope: env('delib.vote_statement', 'participant', { statementId: statementIds[j], vote: agree ? 'agree' : 'disagree' }),
+          trusted: { participantId: participantIds[i] }
+        });
+      }
+    }
+    const snap = await computeSnapshot({ envelope: env('delib.compute_snapshot', 'instructor', { sessionId: SID }) });
+    expect((snap.data as { landscapeEnabled: boolean }).landscapeEnabled).toBe(true);
+    const stored = await landscape.findById(adminContext(SID), (snap.data as { snapshotId: string }).snapshotId);
+    const payload = stored!.payload as { landscape?: { enabled: boolean; k: number; projection: unknown[] } };
+    expect(payload.landscape?.k).toBeGreaterThanOrEqual(2);
+    expect(payload.landscape?.projection.length).toBe(100);
+    // 스냅샷 payload 에 participantId 가 새어나가지 않아야 한다 (거버넌스 §7-2).
+    const serialized = JSON.stringify(payload.landscape);
+    for (const pid of participantIds) expect(serialized).not.toContain(pid);
   });
 
   it('computeSnapshot — hidden 발언은 집계에서 제외 (M-1)', async () => {

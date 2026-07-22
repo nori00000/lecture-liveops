@@ -6,7 +6,7 @@
 
 import ExcelJS from 'exceljs'
 import type { ExportFile } from '@/lib/export/markdown'
-import type { WorkshopReport, ReportRound, ReportResultItem, ReportRawStatement } from './report'
+import type { WorkshopReport, ReportRound, ReportResultItem, ReportRawStatement, ReportLandscape } from './report'
 
 const DISCLOSURE_LABEL: Record<string, string> = {
   participants: '참가자 공개',
@@ -32,6 +32,30 @@ function snapshotSourceText(r: ReportRound): string {
   return r.published
     ? `발행 스냅샷 ${r.snapshotId} · 집계 ${r.computedAt} · 발행 ${r.publishedAt}`
     : `미발행 — 리포트 생성 시점 집계 (${r.computedAt})`
+}
+
+const CLUSTER_LABELS = ['가', '나', '다', '라', '마']
+
+function clusterLabel(id: number): string {
+  return `${CLUSTER_LABELS[id % CLUSTER_LABELS.length]} 그룹`
+}
+
+// Post-MVP B: 의견 지형 요약 (markdown). 비활성이면 사유만 남긴다 — 왜 없는지가 절차 증빙의 일부.
+function mdLandscape(ls: ReportLandscape | null): string {
+  if (!ls) return '- (의견 지형 미계산 — 발행 스냅샷 없음)\n'
+  if (!ls.enabled) return `- 의견 지형 비활성: ${ls.reasonText ?? '사유 미상'} (참가자 ${ls.participantCount}명 · 유효 ${ls.eligibleCount}명)\n`
+  const head =
+    `- 대상: 유효 참가자 ${ls.eligibleCount}명 / 전체 ${ls.participantCount}명 · 그룹 ${ls.k}개 · 분리도(실루엣) ${pct(ls.silhouette)}\n` +
+    `- 그룹 규모: ${ls.clusters.map((c) => `${clusterLabel(c.id)} ${c.size}명`).join(' · ')}\n`
+  const gic = ls.gic.length === 0
+    ? '  - (해당 항목 없음)\n'
+    : ls.gic.map((g) => `  - ${g.body} (GIC ${g.score.toFixed(4)}, statementId=\`${g.statementId}\`)\n`).join('')
+  const reps = ls.representatives.length === 0
+    ? '  - (해당 항목 없음)\n'
+    : ls.representatives
+        .map((r) => `  - ${clusterLabel(r.clusterId)}: ${r.body} (그룹 내 찬성 ${pct(r.agreeRate)} · 그룹 밖 대비 +${(r.lift * 100).toFixed(1)}p, statementId=\`${r.statementId}\`)\n`)
+        .join('')
+  return `${head}- 모든 그룹이 함께 지지한 의견(GIC 상위)\n${gic}- 그룹별 대표 의견\n${reps}`
 }
 
 // ============================================================
@@ -97,7 +121,8 @@ export function planDelibMarkdownExport(report: WorkshopReport): ExportFile[] {
               `- 결과 근거: ${snapshotSourceText(r)}\n\n` +
               `### 합의점 (consensus)\n${mdResultList(r.consensus, 'consensus')}\n\n` +
               `### 쟁점 (divisive)\n${mdResultList(r.divisive, 'divisive')}\n\n` +
-              `### 소수의견 (minority)\n${mdResultList(r.minority, 'minority')}\n`
+              `### 소수의견 (minority)\n${mdResultList(r.minority, 'minority')}\n\n` +
+              `### 의견 지형 (opinion landscape)\n${mdLandscape(r.landscape)}`
             )
           })
           .join('\n'))
@@ -165,6 +190,31 @@ function htmlResultList(items: ReportResultItem[], kind: 'consensus' | 'divisive
   return `<ul class="results">${rows}</ul>`
 }
 
+function htmlLandscape(ls: ReportLandscape | null): string {
+  if (!ls) return '<p class="empty">(의견 지형 미계산 — 발행 스냅샷 없음)</p>'
+  if (!ls.enabled) {
+    return `<p class="empty">의견 지형 비활성: ${esc(ls.reasonText ?? '사유 미상')} (참가자 ${ls.participantCount}명 · 유효 ${ls.eligibleCount}명)</p>`
+  }
+  const head =
+    `<p class="round-meta">유효 참가자 ${ls.eligibleCount}명 / 전체 ${ls.participantCount}명 · 그룹 ${ls.k}개 · 분리도(실루엣) ${pct(ls.silhouette)}</p>` +
+    `<p class="round-meta">그룹 규모: ${esc(ls.clusters.map((c) => `${clusterLabel(c.id)} ${c.size}명`).join(' · '))}</p>`
+  const gic = ls.gic.length === 0
+    ? '<p class="empty">(해당 항목 없음)</p>'
+    : `<ul class="results">${ls.gic
+        .map((g) => `<li><div class="body">${esc(g.body)}</div><div class="meta">GIC ${g.score.toFixed(4)}</div><div class="trace">statementId=<code>${esc(g.statementId)}</code></div></li>`)
+        .join('')}</ul>`
+  const reps = ls.representatives.length === 0
+    ? '<p class="empty">(해당 항목 없음)</p>'
+    : `<ul class="results">${ls.representatives
+        .map((r) =>
+          `<li><div class="body">${esc(r.body)}</div>` +
+          `<div class="meta">${esc(clusterLabel(r.clusterId))} · 그룹 내 찬성 ${pct(r.agreeRate)} · 그룹 밖 대비 +${(r.lift * 100).toFixed(1)}p</div>` +
+          `<div class="trace">statementId=<code>${esc(r.statementId)}</code></div></li>`
+        )
+        .join('')}</ul>`
+  return `${head}<h5>모든 그룹이 함께 지지한 의견 (GIC 상위)</h5>${gic}<h5>그룹별 대표 의견</h5>${reps}`
+}
+
 export function planDelibHtmlExport(report: WorkshopReport): string {
   const o = report.overview
   const p = report.procedure
@@ -181,7 +231,8 @@ export function planDelibHtmlExport(report: WorkshopReport): string {
             `<p class="round-meta">결과 근거: ${esc(snapshotSourceText(r))}</p>` +
             `<h4>합의점 (consensus)</h4>${htmlResultList(r.consensus, 'consensus')}` +
             `<h4>쟁점 (divisive)</h4>${htmlResultList(r.divisive, 'divisive')}` +
-            `<h4>소수의견 (minority)</h4>${htmlResultList(r.minority, 'minority')}</section>`
+            `<h4>소수의견 (minority)</h4>${htmlResultList(r.minority, 'minority')}` +
+            `<h4>의견 지형 (opinion landscape)</h4>${htmlLandscape(r.landscape)}</section>`
           )
         })
         .join('')
@@ -213,6 +264,7 @@ export function planDelibHtmlExport(report: WorkshopReport): string {
   h2 { font-size: 1.25rem; margin-top: 2rem; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
   h3 { font-size: 1.1rem; margin-top: 1.5rem; }
   h4 { font-size: 0.95rem; margin: 1rem 0 0.25rem; color: #444; }
+  h5 { font-size: 0.9rem; margin: 0.75rem 0 0.25rem; color: #555; }
   .note { color: #666; font-size: 0.85rem; }
   dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; }
   dt { font-weight: 600; color: #555; }
@@ -326,7 +378,41 @@ export async function planDelibXlsxBuffer(report: WorkshopReport): Promise<Buffe
     push(r.minority, '소수의견', (it) => `표차 ${it.margin ?? 0}`)
   }
 
-  // 시트 3: moderation 내역
+  // 시트 3: 의견 지형 (Post-MVP B) — 클러스터 규모 / GIC 상위 / 그룹별 대표의견. 좌표는 담지 않는다.
+  const land = wb.addWorksheet('의견 지형')
+  land.columns = [
+    { header: '라운드', key: 'round', width: 8 },
+    { header: '구분', key: 'kind', width: 14 },
+    { header: '그룹', key: 'cluster', width: 10 },
+    { header: '내용', key: 'body', width: 50 },
+    { header: '지표', key: 'score', width: 24 },
+    { header: 'statementId', key: 'statementId', width: 16 }
+  ]
+  for (const r of report.rounds) {
+    const ls = r.landscape
+    if (!ls) {
+      land.addRow({ round: r.roundIndex, kind: '미계산', cluster: '-', body: '발행 스냅샷 없음', score: '-', statementId: '-' })
+      continue
+    }
+    if (!ls.enabled) {
+      land.addRow({ round: r.roundIndex, kind: '비활성', cluster: '-', body: ls.reasonText ?? '사유 미상', score: `참가자 ${ls.participantCount} / 유효 ${ls.eligibleCount}`, statementId: '-' })
+      continue
+    }
+    for (const c of ls.clusters) {
+      land.addRow({ round: r.roundIndex, kind: '그룹 규모', cluster: clusterLabel(c.id), body: `${c.size}명`, score: `실루엣 ${pct(ls.silhouette)}`, statementId: '-' })
+    }
+    for (const g of ls.gic) {
+      land.addRow({ round: r.roundIndex, kind: 'GIC 상위', cluster: '전체', body: g.body, score: `GIC ${g.score.toFixed(4)}`, statementId: g.statementId })
+    }
+    for (const rep of ls.representatives) {
+      land.addRow({
+        round: r.roundIndex, kind: '대표 의견', cluster: clusterLabel(rep.clusterId), body: rep.body,
+        score: `찬성 ${pct(rep.agreeRate)} · +${(rep.lift * 100).toFixed(1)}p`, statementId: rep.statementId
+      })
+    }
+  }
+
+  // 시트 4: moderation 내역
   const mod = wb.addWorksheet('moderation')
   mod.columns = [
     { header: '시각', key: 'createdAt', width: 26 },
@@ -339,7 +425,7 @@ export async function planDelibXlsxBuffer(report: WorkshopReport): Promise<Buffe
     mod.addRow({ createdAt: e.createdAt, statementId: e.statementId, action: e.action, actorRole: e.actorRole, reason: e.reason || '-' })
   }
 
-  // 시트 4: 원자료 (statement 별 집계 — k-익명 억제 반영)
+  // 시트 5: 원자료 (statement 별 집계 — k-익명 억제 반영)
   const raw = wb.addWorksheet('원자료')
   raw.columns = [
     { header: 'statementId', key: 'statementId', width: 16 },
