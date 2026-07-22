@@ -12,7 +12,16 @@
 import type { RlsContext } from '@/lib/db/neonHelpers'
 import { sessions, participants, delibRounds, statements, votes, landscape } from '@/lib/db/repo'
 import { computeSnapshotPayload, type StatementMetric, type MinorityFlag } from './metrics'
-import { landscapeReasonText, type LandscapeResult, type SnapshotPayloadWithLandscape } from './landscapeMetrics'
+import {
+  explainedVarianceWarning,
+  landscapeReasonText,
+  stabilityWarning,
+  type GicClusterStat,
+  type LandscapeResult,
+  type LiftBucket,
+  type PermutationTest,
+  type SnapshotPayloadWithLandscape
+} from './landscapeMetrics'
 import type { RoundMode, RoundStatus, ModerationState, ModerationAction, Role, LandscapeSnapshot } from '@/lib/db/schema'
 
 // 결과 항목 — consensus/divisive/minority 랭킹 1건. 원 statementId/roundId 로 되짚을 수 있다 (traceability).
@@ -42,9 +51,30 @@ export type ReportLandscape = {
   eligibleCount: number
   k: number
   silhouette: number
+  // C3: 2D 좌표 설명분산 + 낮을 때의 경고 문구.
+  explainedVarianceRatio: number
+  varianceWarning: string | null
+  // H5: leave-one-out 안정성 경고 문구.
+  stabilityWarning: string | null
+  // C2: 순열검정 요약 (관측 실루엣 / null 95th / p).
+  permutation: PermutationTest | null
+  // C5: 응답 회피가 높은 발언 — 클러스터링에서 제외되었지만 회피 자체가 정보다.
+  avoidedStatements: Array<{ statementId: string; body: string; missingRate: number; votes: number }>
+  analyzedStatementCount: number
   clusters: Array<{ id: number; size: number }>
-  gic: Array<{ statementId: string; body: string; score: number }>
-  representatives: Array<{ clusterId: number; statementId: string; body: string; lift: number; agreeRate: number }>
+  gic: Array<{ statementId: string; body: string; score: number; perCluster: GicClusterStat[] }>
+  representatives: Array<{
+    clusterId: number
+    statementId: string
+    body: string
+    lift: number
+    agreeRate: number
+    insideVotes: number
+    pAdjusted: number
+    test: 'z' | 'fisher'
+    rank: number
+    bucket: LiftBucket
+  }>
 }
 
 export type ReportRound = {
@@ -147,11 +177,26 @@ function toResultItem(
 // 스냅샷 payload.landscape → 리포트용 요약. 좌표는 버리고 규모·GIC·대표의견만 남긴다.
 function toReportLandscape(ls: LandscapeResult | undefined, bodyById: Map<string, string>): ReportLandscape | null {
   if (!ls) return null
+  // C5: 회피 발언은 활성/비활성과 무관하게 항상 노출한다 (삭제가 아니라 별도 표기).
+  const avoidedStatements = (ls.missingness ?? [])
+    .filter((m) => m.excluded)
+    .map((m) => ({
+      statementId: m.statementId,
+      body: bodyById.get(m.statementId) ?? '',
+      missingRate: m.missingRate,
+      votes: m.votes
+    }))
   const base = {
     participantCount: ls.participantCount,
     eligibleCount: ls.eligibleCount,
     k: ls.k,
     silhouette: ls.silhouette,
+    explainedVarianceRatio: ls.explainedVarianceRatio ?? 0,
+    varianceWarning: explainedVarianceWarning(ls),
+    stabilityWarning: stabilityWarning(ls),
+    permutation: ls.permutation ?? null,
+    avoidedStatements,
+    analyzedStatementCount: ls.analyzedStatementCount ?? 0,
     clusters: (ls.clusters ?? []).map((c) => ({ id: c.id, size: c.size }))
   }
   if (!ls.enabled) {
@@ -160,13 +205,23 @@ function toReportLandscape(ls: LandscapeResult | undefined, bodyById: Map<string
   return {
     enabled: true,
     ...base,
-    gic: (ls.gic ?? []).map((g) => ({ statementId: g.statementId, body: bodyById.get(g.statementId) ?? '', score: g.score })),
+    gic: (ls.gic ?? []).map((g) => ({
+      statementId: g.statementId,
+      body: bodyById.get(g.statementId) ?? '',
+      score: g.score,
+      perCluster: g.perCluster ?? []
+    })),
     representatives: (ls.representatives ?? []).map((r) => ({
       clusterId: r.clusterId,
       statementId: r.statementId,
       body: bodyById.get(r.statementId) ?? '',
       lift: r.lift,
-      agreeRate: r.agreeRate
+      agreeRate: r.agreeRate,
+      insideVotes: r.insideVotes,
+      pAdjusted: r.pAdjusted,
+      test: r.test,
+      rank: r.rank,
+      bucket: r.bucket
     }))
   }
 }

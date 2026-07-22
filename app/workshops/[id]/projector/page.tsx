@@ -4,7 +4,14 @@ import { use } from 'react'
 import useSWR from 'swr'
 import { swrFetcher } from '@/lib/api/fetcher'
 import type { StatementMetric, MinorityFlag } from '@/lib/delib/metrics'
-import { landscapeReasonText, type LandscapeResult, type SnapshotPayloadWithLandscape } from '@/lib/delib/landscapeMetrics'
+import {
+  explainedVarianceWarning,
+  landscapeReasonText,
+  stabilityWarning,
+  type LandscapeResult,
+  type LiftBucket,
+  type SnapshotPayloadWithLandscape
+} from '@/lib/delib/landscapeMetrics'
 
 type ProjectorData = {
   ok: boolean
@@ -134,44 +141,23 @@ function DivisiveRow({ m, body }: { m: StatementMetric; body: string }) {
 }
 
 // ============================================================
-// 의견 지형 (Post-MVP B) — 차트 라이브러리 없이 인라인 SVG 로 직접 렌더 (의존성 0).
-// 접근성: 색이 유일한 정보수단이 되지 않게 클러스터마다 모양(원/사각/삼각/마름모/십자) + 라벨을 병행한다.
-// 프라이버시: 좌표에 participantId 가 없고 배열 순서도 정렬되어 있어 개인 위치를 역추적할 수 없다.
+// 의견 지형 (Post-MVP B / 통계 하드닝 2026-07-22)
+// H2: 개별 좌표(projection)는 공개 화면에 노출하지 않는다 — 좌표는 개인 투표 벡터의 저차원
+//     서명이라 공개 발언·현장 관찰과 결합하면 재식별이 가능하다. 클러스터 규모·대표문장만 보여준다.
+// C3: 설명분산이 낮으면 경고 배지를 띄운다. 애초에 산점도를 그리지 않으므로
+//     "30%든 90%든 똑같이 권위 있어 보이는 그림" 문제 자체가 사라진다.
+// H3: 대표의견은 정확 수치 대신 순위 + 효과크기 bucket 으로만 표기한다.
+// 접근성: 색이 유일한 정보수단이 되지 않게 클러스터마다 라벨(가/나/다…)을 병행한다.
 // ============================================================
 
 const CLUSTER_LABELS = ['가', '나', '다', '라', '마']
 const CLUSTER_COLORS = ['text-accent', 'text-warn', 'text-info', 'text-danger', 'text-textDim']
-const CLUSTER_SHAPES = ['원', '사각형', '삼각형', '마름모', '십자'] as const
+const CLUSTER_BARS = ['bg-accent', 'bg-warn', 'bg-info', 'bg-danger', 'bg-textDim']
 
-// 클러스터별 마커 — 색 + 모양 이중 부호화.
-function ClusterMarker({ cluster, cx, cy, r }: { cluster: number; cx: number; cy: number; r: number }) {
-  const cls = CLUSTER_COLORS[cluster % CLUSTER_COLORS.length]
-  switch (cluster % 5) {
-    case 0:
-      return <circle className={cls} cx={cx} cy={cy} r={r} fill="currentColor" />
-    case 1:
-      return <rect className={cls} x={cx - r} y={cy - r} width={r * 2} height={r * 2} fill="currentColor" />
-    case 2:
-      return <polygon className={cls} points={`${cx},${cy - r} ${cx + r},${cy + r} ${cx - r},${cy + r}`} fill="currentColor" />
-    case 3:
-      return <polygon className={cls} points={`${cx},${cy - r} ${cx + r},${cy} ${cx},${cy + r} ${cx - r},${cy}`} fill="currentColor" />
-    default:
-      return (
-        <g className={cls} fill="currentColor">
-          <rect x={cx - r} y={cy - r / 3} width={r * 2} height={(r * 2) / 3} />
-          <rect x={cx - r / 3} y={cy - r} width={(r * 2) / 3} height={r * 2} />
-        </g>
-      )
-  }
-}
-
-// 좌표를 SVG 뷰포트(0~100)로 정규화. 값이 모두 같으면 가운데로.
-function normalize(values: number[]): (v: number) => number {
-  const min = Math.min(...values)
-  const max = Math.max(...values)
-  const span = max - min
-  if (!Number.isFinite(span) || span <= 0) return () => 50
-  return (v: number) => 8 + ((v - min) / span) * 84
+const BUCKET_TEXT: Record<LiftBucket, string> = {
+  strong: '뚜렷한 차이',
+  moderate: '중간 정도 차이',
+  slight: '약한 차이'
 }
 
 function LandscapeSection({ landscape, bodyOf }: { landscape?: LandscapeResult; bodyOf: (id: string) => string }) {
@@ -186,61 +172,46 @@ function LandscapeSection({ landscape, bodyOf }: { landscape?: LandscapeResult; 
     )
   }
 
-  const xs = landscape.projection.map((p) => p.x)
-  const ys = landscape.projection.map((p) => p.y)
-  const toX = normalize(xs)
-  const toY = normalize(ys)
+  const varianceNote = explainedVarianceWarning(landscape)
+  const stabilityNote = stabilityWarning(landscape)
+  const maxSize = Math.max(1, ...landscape.clusters.map((c) => c.size))
 
   return (
     <section className="mt-6 rounded-lg border border-border bg-surface p-5">
       <div className="flex items-end justify-between gap-4 flex-wrap mb-4">
         <h2 className="text-2xl font-semibold">의견 지형</h2>
         <p className="text-sm text-textDim">
-          참가자 {landscape.eligibleCount}명(7표 이상) · 그룹 {landscape.k}개 · 분리도 {Math.round(landscape.silhouette * 100)}%
+          참가자 {landscape.eligibleCount}명(7표 이상) · 그룹 {landscape.k}개 · 설명력 {Math.round(landscape.explainedVarianceRatio * 100)}%
         </p>
       </div>
 
+      {varianceNote ? (
+        <p className="mb-3 rounded-md border border-warn/50 bg-warn/10 px-3 py-2 text-sm text-warn">{varianceNote}</p>
+      ) : null}
+      {stabilityNote ? (
+        <p className="mb-3 rounded-md border border-warn/50 bg-warn/10 px-3 py-2 text-sm text-warn">{stabilityNote}</p>
+      ) : null}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div>
-          <svg
-            viewBox="0 0 100 100"
-            className="w-full aspect-square rounded-md border border-border bg-surfaceAlt"
-            role="img"
-            aria-label={`의견 지형 산점도. 참가자 ${landscape.eligibleCount}명이 ${landscape.k}개 그룹으로 나뉘었습니다. 각 점은 익명 좌표이며 개인을 식별하지 않습니다.`}
-          >
-            {landscape.projection.map((p, i) => (
-              <ClusterMarker key={i} cluster={p.cluster} cx={toX(p.x)} cy={toY(p.y)} r={1.4} />
-            ))}
+          <h3 className="text-lg font-semibold mb-2">그룹 규모</h3>
+          <ul className="space-y-2">
             {landscape.clusters.map((c) => (
-              <text
-                key={c.id}
-                x={toX(c.centroid.x)}
-                y={toY(c.centroid.y)}
-                className={CLUSTER_COLORS[c.id % CLUSTER_COLORS.length]}
-                fill="currentColor"
-                fontSize="6"
-                fontWeight="700"
-                textAnchor="middle"
-                stroke="var(--color-bg, #000)"
-                strokeWidth="0.4"
-                paintOrder="stroke"
-              >
-                {CLUSTER_LABELS[c.id % CLUSTER_LABELS.length]}
-              </text>
-            ))}
-          </svg>
-          <ul className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm">
-            {landscape.clusters.map((c) => (
-              <li key={c.id} className="text-textDim">
-                <span className={`font-semibold ${CLUSTER_COLORS[c.id % CLUSTER_COLORS.length]}`}>
-                  {CLUSTER_LABELS[c.id % CLUSTER_LABELS.length]} 그룹
-                </span>{' '}
-                ({CLUSTER_SHAPES[c.id % CLUSTER_SHAPES.length]}) {c.size}명
+              <li key={c.id}>
+                <div className="flex items-baseline justify-between text-sm">
+                  <span className={`font-semibold ${CLUSTER_COLORS[c.id % CLUSTER_COLORS.length]}`}>
+                    {CLUSTER_LABELS[c.id % CLUSTER_LABELS.length]} 그룹
+                  </span>
+                  <span className="text-textDim">{c.size}명</span>
+                </div>
+                <div className="mt-1 h-3 w-full rounded-full bg-surfaceAlt overflow-hidden" role="img" aria-label={`${CLUSTER_LABELS[c.id % CLUSTER_LABELS.length]} 그룹 ${c.size}명`}>
+                  <div className={`h-full ${CLUSTER_BARS[c.id % CLUSTER_BARS.length]}`} style={{ width: `${(c.size / maxSize) * 100}%` }} />
+                </div>
               </li>
             ))}
           </ul>
-          <p className="mt-2 text-xs text-textMute">
-            점은 익명 좌표입니다 — 개인을 식별하거나 특정 참가자의 위치를 되짚을 수 없습니다.
+          <p className="mt-3 text-xs text-textMute">
+            그룹은 투표 패턴이 비슷한 참가자 묶음입니다. 개인 좌표는 재식별 위험이 있어 화면에 표시하지 않습니다.
           </p>
         </div>
 
@@ -263,7 +234,7 @@ function LandscapeSection({ landscape, bodyOf }: { landscape?: LandscapeResult; 
           <div>
             <h3 className="text-lg font-semibold mb-2">그룹별 대표 의견</h3>
             {landscape.representatives.length === 0 ? (
-              <p className="text-textDim text-sm">표본 부족 — 표시할 항목이 없습니다</p>
+              <p className="text-textDim text-sm">이 그룹들을 뚜렷이 구분짓는 발언이 통계적으로 확인되지 않았습니다</p>
             ) : (
               <div className="space-y-3">
                 {landscape.clusters.map((c) => {
@@ -272,13 +243,13 @@ function LandscapeSection({ landscape, bodyOf }: { landscape?: LandscapeResult; 
                   return (
                     <div key={c.id} className="rounded-md border border-border p-3">
                       <div className={`text-sm font-semibold mb-1 ${CLUSTER_COLORS[c.id % CLUSTER_COLORS.length]}`}>
-                        {CLUSTER_LABELS[c.id % CLUSTER_LABELS.length]} 그룹 ({CLUSTER_SHAPES[c.id % CLUSTER_SHAPES.length]}) · {c.size}명
+                        {CLUSTER_LABELS[c.id % CLUSTER_LABELS.length]} 그룹 · {c.size}명
                       </div>
                       <ul className="space-y-1">
                         {items.map((r) => (
                           <li key={r.statementId} className="text-base leading-snug">
                             {bodyOf(r.statementId)}
-                            <span className="text-xs text-textMute"> · 그룹 내 찬성 {Math.round(r.agreeRate * 100)}%</span>
+                            <span className="text-xs text-textMute"> · {r.rank}순위 · 다른 그룹과 {BUCKET_TEXT[r.bucket]}</span>
                           </li>
                         ))}
                       </ul>

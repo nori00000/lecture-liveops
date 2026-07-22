@@ -41,21 +41,56 @@ function clusterLabel(id: number): string {
 }
 
 // Post-MVP B: 의견 지형 요약 (markdown). 비활성이면 사유만 남긴다 — 왜 없는지가 절차 증빙의 일부.
+// 회피 발언(C5) — 활성/비활성 공통으로 붙인다.
+function mdAvoided(ls: ReportLandscape): string {
+  if (ls.avoidedStatements.length === 0) return ''
+  return (
+    `- 응답 회피가 높은 발언 (결측률 40% 초과 — 클러스터링 입력에서 제외, 회피 자체가 정보)\n` +
+    ls.avoidedStatements
+      .map((a) => `  - ${a.body} (결측률 ${pct(a.missingRate)} · 응답 ${a.votes}표, statementId=\`${a.statementId}\`)\n`)
+      .join('')
+  )
+}
+
 function mdLandscape(ls: ReportLandscape | null): string {
   if (!ls) return '- (의견 지형 미계산 — 발행 스냅샷 없음)\n'
-  if (!ls.enabled) return `- 의견 지형 비활성: ${ls.reasonText ?? '사유 미상'} (참가자 ${ls.participantCount}명 · 유효 ${ls.eligibleCount}명)\n`
+  if (!ls.enabled) {
+    return (
+      `- 의견 지형 비활성: ${ls.reasonText ?? '사유 미상'} (참가자 ${ls.participantCount}명 · 유효 ${ls.eligibleCount}명)\n` +
+      (ls.permutation
+        ? `  - 순열검정: 관측 분리도 ${ls.permutation.observed.toFixed(3)} · 무작위 기준선(95th) ${ls.permutation.threshold95.toFixed(3)} · p=${ls.permutation.pValue.toFixed(4)} (${ls.permutation.iterations}회)\n`
+        : '') +
+      mdAvoided(ls)
+    )
+  }
   const head =
     `- 대상: 유효 참가자 ${ls.eligibleCount}명 / 전체 ${ls.participantCount}명 · 그룹 ${ls.k}개 · 분리도(실루엣) ${pct(ls.silhouette)}\n` +
+    `- 분석 발언 ${ls.analyzedStatementCount}건 · 2D 설명분산 ${pct(ls.explainedVarianceRatio)}\n` +
+    (ls.permutation
+      ? `- 순열검정 통과: 관측 ${ls.permutation.observed.toFixed(3)} > 무작위 기준선(95th) ${ls.permutation.threshold95.toFixed(3)} · p=${ls.permutation.pValue.toFixed(4)} (${ls.permutation.iterations}회)\n`
+      : '') +
+    (ls.varianceWarning ? `- ⚠ ${ls.varianceWarning}\n` : '') +
+    (ls.stabilityWarning ? `- ⚠ ${ls.stabilityWarning}\n` : '') +
     `- 그룹 규모: ${ls.clusters.map((c) => `${clusterLabel(c.id)} ${c.size}명`).join(' · ')}\n`
   const gic = ls.gic.length === 0
     ? '  - (해당 항목 없음)\n'
-    : ls.gic.map((g) => `  - ${g.body} (GIC ${g.score.toFixed(4)}, statementId=\`${g.statementId}\`)\n`).join('')
-  const reps = ls.representatives.length === 0
-    ? '  - (해당 항목 없음)\n'
-    : ls.representatives
-        .map((r) => `  - ${clusterLabel(r.clusterId)}: ${r.body} (그룹 내 찬성 ${pct(r.agreeRate)} · 그룹 밖 대비 +${(r.lift * 100).toFixed(1)}p, statementId=\`${r.statementId}\`)\n`)
+    : ls.gic
+        .map((g) => {
+          const detail = g.perCluster
+            .map((c) => `${clusterLabel(c.clusterId)} ${pct(c.agreeRate)}[${pct(c.ciLow)}~${pct(c.ciHigh)}] n=${c.votes}`)
+            .join(' · ')
+          return `  - ${g.body} (GIC 기하평균 ${g.score.toFixed(4)}; ${detail}, statementId=\`${g.statementId}\`)\n`
+        })
         .join('')
-  return `${head}- 모든 그룹이 함께 지지한 의견(GIC 상위)\n${gic}- 그룹별 대표 의견\n${reps}`
+  const reps = ls.representatives.length === 0
+    ? '  - (이 그룹들을 뚜렷이 구분짓는 발언이 통계적으로 확인되지 않았습니다 — FDR 보정 후 유의 항목 0건)\n'
+    : ls.representatives
+        .map((r) =>
+          `  - ${clusterLabel(r.clusterId)} ${r.rank}순위: ${r.body} (그룹 내 찬성 ${pct(r.agreeRate)} · 그룹 밖 대비 +${(r.lift * 100).toFixed(1)}p · ` +
+          `보정 p=${r.pAdjusted.toExponential(2)}(${r.test === 'fisher' ? 'Fisher 정확검정' : 'z-검정'}, BH FDR) · 그룹 내 유효표 ${r.insideVotes}, statementId=\`${r.statementId}\`)\n`
+        )
+        .join('')
+  return `${head}- 모든 그룹이 함께 지지한 의견(GIC 상위)\n${gic}- 그룹별 대표 의견\n${reps}${mdAvoided(ls)}`
 }
 
 // ============================================================
@@ -190,29 +225,61 @@ function htmlResultList(items: ReportResultItem[], kind: 'consensus' | 'divisive
   return `<ul class="results">${rows}</ul>`
 }
 
+function htmlAvoided(ls: ReportLandscape): string {
+  if (ls.avoidedStatements.length === 0) return ''
+  return (
+    `<h5>응답 회피가 높은 발언</h5>` +
+    `<p class="round-meta">결측률 40% 초과 — 클러스터링 입력에서 제외했습니다. 삭제가 아니라 별도 표기입니다(회피 자체가 정보).</p>` +
+    `<ul class="results">${ls.avoidedStatements
+      .map((a) =>
+        `<li><div class="body">${esc(a.body)}</div><div class="meta">결측률 ${pct(a.missingRate)} · 응답 ${a.votes}표</div>` +
+        `<div class="trace">statementId=<code>${esc(a.statementId)}</code></div></li>`
+      )
+      .join('')}</ul>`
+  )
+}
+
 function htmlLandscape(ls: ReportLandscape | null): string {
   if (!ls) return '<p class="empty">(의견 지형 미계산 — 발행 스냅샷 없음)</p>'
   if (!ls.enabled) {
-    return `<p class="empty">의견 지형 비활성: ${esc(ls.reasonText ?? '사유 미상')} (참가자 ${ls.participantCount}명 · 유효 ${ls.eligibleCount}명)</p>`
+    return (
+      `<p class="empty">의견 지형 비활성: ${esc(ls.reasonText ?? '사유 미상')} (참가자 ${ls.participantCount}명 · 유효 ${ls.eligibleCount}명)</p>` +
+      (ls.permutation
+        ? `<p class="round-meta">순열검정: 관측 분리도 ${ls.permutation.observed.toFixed(3)} · 무작위 기준선(95th) ${ls.permutation.threshold95.toFixed(3)} · p=${ls.permutation.pValue.toFixed(4)} (${ls.permutation.iterations}회)</p>`
+        : '') +
+      htmlAvoided(ls)
+    )
   }
   const head =
     `<p class="round-meta">유효 참가자 ${ls.eligibleCount}명 / 전체 ${ls.participantCount}명 · 그룹 ${ls.k}개 · 분리도(실루엣) ${pct(ls.silhouette)}</p>` +
+    `<p class="round-meta">분석 발언 ${ls.analyzedStatementCount}건 · 2D 설명분산 ${pct(ls.explainedVarianceRatio)}</p>` +
+    (ls.permutation
+      ? `<p class="round-meta">순열검정 통과: 관측 ${ls.permutation.observed.toFixed(3)} &gt; 무작위 기준선(95th) ${ls.permutation.threshold95.toFixed(3)} · p=${ls.permutation.pValue.toFixed(4)} (${ls.permutation.iterations}회)</p>`
+      : '') +
+    (ls.varianceWarning ? `<p class="warn">⚠ ${esc(ls.varianceWarning)}</p>` : '') +
+    (ls.stabilityWarning ? `<p class="warn">⚠ ${esc(ls.stabilityWarning)}</p>` : '') +
     `<p class="round-meta">그룹 규모: ${esc(ls.clusters.map((c) => `${clusterLabel(c.id)} ${c.size}명`).join(' · '))}</p>`
   const gic = ls.gic.length === 0
     ? '<p class="empty">(해당 항목 없음)</p>'
     : `<ul class="results">${ls.gic
-        .map((g) => `<li><div class="body">${esc(g.body)}</div><div class="meta">GIC ${g.score.toFixed(4)}</div><div class="trace">statementId=<code>${esc(g.statementId)}</code></div></li>`)
+        .map((g) => {
+          const detail = g.perCluster
+            .map((c) => `${clusterLabel(c.clusterId)} ${pct(c.agreeRate)}[${pct(c.ciLow)}~${pct(c.ciHigh)}] n=${c.votes}`)
+            .join(' · ')
+          return `<li><div class="body">${esc(g.body)}</div><div class="meta">GIC 기하평균 ${g.score.toFixed(4)} · ${esc(detail)}</div><div class="trace">statementId=<code>${esc(g.statementId)}</code></div></li>`
+        })
         .join('')}</ul>`
   const reps = ls.representatives.length === 0
-    ? '<p class="empty">(해당 항목 없음)</p>'
+    ? '<p class="empty">이 그룹들을 뚜렷이 구분짓는 발언이 통계적으로 확인되지 않았습니다 (FDR 보정 후 유의 항목 0건)</p>'
     : `<ul class="results">${ls.representatives
         .map((r) =>
           `<li><div class="body">${esc(r.body)}</div>` +
-          `<div class="meta">${esc(clusterLabel(r.clusterId))} · 그룹 내 찬성 ${pct(r.agreeRate)} · 그룹 밖 대비 +${(r.lift * 100).toFixed(1)}p</div>` +
+          `<div class="meta">${esc(clusterLabel(r.clusterId))} ${r.rank}순위 · 그룹 내 찬성 ${pct(r.agreeRate)} · 그룹 밖 대비 +${(r.lift * 100).toFixed(1)}p · ` +
+          `보정 p=${r.pAdjusted.toExponential(2)} (${r.test === 'fisher' ? 'Fisher 정확검정' : 'z-검정'}, BH FDR) · 그룹 내 유효표 ${r.insideVotes}</div>` +
           `<div class="trace">statementId=<code>${esc(r.statementId)}</code></div></li>`
         )
         .join('')}</ul>`
-  return `${head}<h5>모든 그룹이 함께 지지한 의견 (GIC 상위)</h5>${gic}<h5>그룹별 대표 의견</h5>${reps}`
+  return `${head}<h5>모든 그룹이 함께 지지한 의견 (GIC 상위)</h5>${gic}<h5>그룹별 대표 의견</h5>${reps}${htmlAvoided(ls)}`
 }
 
 export function planDelibHtmlExport(report: WorkshopReport): string {
@@ -278,6 +345,7 @@ export function planDelibHtmlExport(report: WorkshopReport): string {
   th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; vertical-align: top; }
   th { background: rgba(0,0,0,0.04); }
   .empty { color: #999; font-style: italic; }
+  .warn { color: #8a5b00; background: #fff6e0; border: 1px solid #e8c97a; border-radius: 4px; padding: 6px 10px; margin: 6px 0; font-size: 0.85rem; }
 </style></head>
 <body>
 <h1>${esc(o.title)} — 숙의 워크숍 결과 리포트</h1>
@@ -394,22 +462,60 @@ export async function planDelibXlsxBuffer(report: WorkshopReport): Promise<Buffe
       land.addRow({ round: r.roundIndex, kind: '미계산', cluster: '-', body: '발행 스냅샷 없음', score: '-', statementId: '-' })
       continue
     }
+    // C5: 회피 발언은 활성/비활성과 무관하게 기록한다.
+    const addAvoided = () => {
+      for (const a of ls.avoidedStatements) {
+        land.addRow({
+          round: r.roundIndex, kind: '응답 회피', cluster: '-', body: a.body,
+          score: `결측률 ${pct(a.missingRate)} · 응답 ${a.votes}표`, statementId: a.statementId
+        })
+      }
+    }
     if (!ls.enabled) {
       land.addRow({ round: r.roundIndex, kind: '비활성', cluster: '-', body: ls.reasonText ?? '사유 미상', score: `참가자 ${ls.participantCount} / 유효 ${ls.eligibleCount}`, statementId: '-' })
+      if (ls.permutation) {
+        land.addRow({
+          round: r.roundIndex, kind: '순열검정', cluster: '-', body: '무작위 기준선과 구분되지 않음',
+          score: `관측 ${ls.permutation.observed.toFixed(3)} / 95th ${ls.permutation.threshold95.toFixed(3)} / p=${ls.permutation.pValue.toFixed(4)}`, statementId: '-'
+        })
+      }
+      addAvoided()
       continue
+    }
+    land.addRow({
+      round: r.roundIndex, kind: '진단', cluster: '-', body: `분석 발언 ${ls.analyzedStatementCount}건`,
+      score: `설명분산 ${pct(ls.explainedVarianceRatio)}`, statementId: '-'
+    })
+    if (ls.permutation) {
+      land.addRow({
+        round: r.roundIndex, kind: '순열검정', cluster: '-', body: `통과 (${ls.permutation.iterations}회)`,
+        score: `관측 ${ls.permutation.observed.toFixed(3)} / 95th ${ls.permutation.threshold95.toFixed(3)} / p=${ls.permutation.pValue.toFixed(4)}`, statementId: '-'
+      })
+    }
+    for (const note of [ls.varianceWarning, ls.stabilityWarning]) {
+      if (note) land.addRow({ round: r.roundIndex, kind: '경고', cluster: '-', body: note, score: '-', statementId: '-' })
     }
     for (const c of ls.clusters) {
       land.addRow({ round: r.roundIndex, kind: '그룹 규모', cluster: clusterLabel(c.id), body: `${c.size}명`, score: `실루엣 ${pct(ls.silhouette)}`, statementId: '-' })
     }
     for (const g of ls.gic) {
-      land.addRow({ round: r.roundIndex, kind: 'GIC 상위', cluster: '전체', body: g.body, score: `GIC ${g.score.toFixed(4)}`, statementId: g.statementId })
+      const detail = g.perCluster.map((c) => `${clusterLabel(c.clusterId)} ${pct(c.agreeRate)} n=${c.votes}`).join(' · ')
+      land.addRow({ round: r.roundIndex, kind: 'GIC 상위', cluster: '전체', body: g.body, score: `GIC(기하평균) ${g.score.toFixed(4)} · ${detail}`, statementId: g.statementId })
+    }
+    if (ls.representatives.length === 0) {
+      land.addRow({
+        round: r.roundIndex, kind: '대표 의견', cluster: '-',
+        body: '이 그룹들을 뚜렷이 구분짓는 발언이 통계적으로 확인되지 않았습니다', score: 'FDR 보정 후 유의 0건', statementId: '-'
+      })
     }
     for (const rep of ls.representatives) {
       land.addRow({
         round: r.roundIndex, kind: '대표 의견', cluster: clusterLabel(rep.clusterId), body: rep.body,
-        score: `찬성 ${pct(rep.agreeRate)} · +${(rep.lift * 100).toFixed(1)}p`, statementId: rep.statementId
+        score: `${rep.rank}순위 · 찬성 ${pct(rep.agreeRate)} · +${(rep.lift * 100).toFixed(1)}p · 보정 p=${rep.pAdjusted.toExponential(2)}`,
+        statementId: rep.statementId
       })
     }
+    addAvoided()
   }
 
   // 시트 4: moderation 내역

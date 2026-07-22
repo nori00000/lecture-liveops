@@ -32,9 +32,14 @@ export async function GET(req: Request) {
 
   // M3: 결과판은 랭킹(consensus/divisive/minority)에 실제 표시되는 발언 원문만 내려보낸다.
   // suppressed(k-익명 억제)·랭킹 미표시 발언의 원문은 payload 로 새어나가지 않게 allowlist 로 제외한다.
-  const payload = latestPublished.payload as unknown as SnapshotPayloadWithLandscape
+  const stored = latestPublished.payload as unknown as SnapshotPayloadWithLandscape
+  // H2(2026-07-22): landscape.projection(개별 좌표)은 익명이 아니다 — 좌표는 개인 투표 벡터의
+  // 저차원 서명이라 공개 발언·현장 관찰과 결합하면 재식별 가능하다.
+  // 좌표는 스냅샷 내부에만 남기고 공개 payload 에서는 제거한다 (클러스터 규모·대표문장·설명분산만 노출).
+  const payload: SnapshotPayloadWithLandscape = stored.landscape
+    ? { ...stored, landscape: { ...stored.landscape, projection: [] } }
+    : stored
   // 의견 지형(landscape)의 GIC/대표의견도 화면에 원문이 필요하므로 allowlist 에 포함한다.
-  // landscape.projection 은 익명 좌표만 담고 participantId 가 없으므로 그대로 내보낸다.
   const landscapeIds = payload.landscape?.enabled
     ? [
         ...(payload.landscape.gic ?? []).map((g) => g.statementId),

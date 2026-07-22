@@ -35,6 +35,13 @@ export type Pca2dResult = {
   components: [number[], number[]]
   // 각 주성분의 고유값 (분산). 설명력 비교용.
   eigenvalues: [number, number]
+  // 공분산 trace = Σλ (전체 분산). explainedVarianceRatio 의 분모.
+  totalVariance: number
+  // (λ1+λ2)/Σλ — 2D 산점도가 원 데이터의 몇 %를 설명하는가 (C3).
+  // 이 값이 낮으면 산점도는 "보기에만 그럴듯한" 그림이 된다.
+  explainedVarianceRatio: number
+  // power iteration 이 두 축 모두 수렴했는가 (H1). false 면 지형을 신뢰할 수 없다.
+  converged: boolean
 }
 
 export type KmeansResult = {
@@ -43,11 +50,14 @@ export type KmeansResult = {
   centroids: Point2D[]
   iterations: number
   converged: boolean
+  // 멤버가 0명인 클러스터 수 (M2). >0 이면 요청한 k 가 데이터에 맞지 않은 것이므로
+  // converged=true 라도 품질 실패로 취급해야 한다.
+  emptyClusterCount: number
 }
 
 const VOTE_SCORE: Record<ClusterVoteValue, number> = { agree: 1, disagree: -1, pass: 0 }
 
-const POWER_ITER_MAX = 500
+const POWER_ITER_MAX = 1000
 const POWER_ITER_EPS = 1e-12
 const KMEANS_ITER_MAX = 100
 
@@ -202,56 +212,123 @@ function canonicalSign(v: number[]): number[] {
   return v[best] < 0 ? v.map((x) => -x) : v
 }
 
+// 벡터 v 에서 basis(정규직교 가정) 성분을 제거한다 — Gram-Schmidt 재직교화.
+function orthogonalize(v: number[], basis: number[][]): number[] {
+  let out = v
+  for (const b of basis) {
+    let dot = 0
+    for (let i = 0; i < out.length; i += 1) dot += out[i] * b[i]
+    if (dot === 0) continue
+    out = out.map((x, i) => x - dot * b[i])
+  }
+  return out
+}
+
 // 최대 고유쌍 (power iteration). 초기벡터는 고정 시드 PRNG — 결정론적.
-function dominantEigen(m: number[][], seed: number, scale = 0): { vector: number[]; value: number } {
+//
+// H1(2026-07-22): deflation 잔차의 수치오차가 "절댓값은 크지만 방향은 음수 고유값"인 축을
+// PC2 로 되돌리는 사고를 막는다.
+//  - 매 iteration 마다 against(=이미 확정된 축)에 Gram-Schmidt 재직교화 → 첫 축 성분 누출 차단
+//  - Rayleigh quotient ≤ tol 이면 0 clamp (분산 없는 축을 만들어내지 않는다)
+//  - 미수렴이면 converged=false 를 올려보내 상위에서 지형 자체를 비활성화한다
+function dominantEigen(
+  m: number[][],
+  seed: number,
+  opts: { scale?: number; against?: number[][]; maxIter?: number } = {}
+): { vector: number[]; value: number; converged: boolean } {
   const d = m.length
-  if (d === 0) return { vector: [], value: 0 }
+  if (d === 0) return { vector: [], value: 0, converged: true }
+  const against = opts.against ?? []
+  const maxIter = opts.maxIter ?? POWER_ITER_MAX
   // 영(0) 판정 임계 — 디플레이션 잔차(부동소수점 noise)를 실제 축으로 착각하지 않게 스케일 상대값을 쓴다.
-  const zeroTol = Math.max(POWER_ITER_EPS, Math.abs(scale) * 1e-9)
+  const zeroTol = Math.max(POWER_ITER_EPS, Math.abs(opts.scale ?? 0) * 1e-9)
+  const zero = () => ({ vector: new Array<number>(d).fill(0), value: 0, converged: true })
   const rng = createRng(seed)
   let v = new Array<number>(d).fill(0).map(() => rng() * 2 - 1)
+  v = orthogonalize(v, against)
   let len = norm(v)
   if (len === 0) {
     v = new Array<number>(d).fill(0)
     v[0] = 1
-    len = 1
+    v = orthogonalize(v, against)
+    len = norm(v)
+    if (len === 0) return zero()
   }
   v = v.map((x) => x / len)
 
-  for (let iter = 0; iter < POWER_ITER_MAX; iter += 1) {
-    const next = matVec(m, v)
+  let converged = false
+  let prevLambda = Number.NaN
+  for (let iter = 0; iter < maxIter; iter += 1) {
+    const raw = matVec(m, v)
+    // Rayleigh quotient (현재 v 기준) — 추가 matVec 없이 얻는다.
+    let lambda = 0
+    for (let i = 0; i < d; i += 1) lambda += v[i] * raw[i]
+    // 매 회 재직교화 — 부동소수점 누적으로 첫 축이 다시 새어들어오는 것을 막는다.
+    const next = orthogonalize(raw, against)
     const nlen = norm(next)
     // 분산이 남아있지 않은 축 — 방향을 임의로 고르지 않고 영벡터를 돌려준다(투영값 0).
-    if (nlen < zeroTol) return { vector: new Array<number>(d).fill(0), value: 0 }
+    if (nlen < zeroTol) return zero()
     const normalized = next.map((x) => x / nlen)
-    // 수렴 판정: 방향 변화량 (부호 반전 허용).
+    // 수렴 판정 ①: 방향 변화량 (부호 반전 허용).
     let dot = 0
     for (let i = 0; i < d; i += 1) dot += normalized[i] * v[i]
+    // 수렴 판정 ②: 고유값 안정화.
+    //   λ1≈λ2 인 준퇴화(near-degenerate) 데이터에서는 두 축이 이루는 평면만 결정되고
+    //   평면 안에서의 회전은 결정되지 않는다(방향 판정 ①이 영원히 만족되지 않음).
+    //   k-means/실루엣은 회전 불변이므로 이때 지형을 죽이는 것은 잘못된 음성이다.
+    //   따라서 "고유값이 안정화되었는가"를 수렴의 기준으로 삼고, 진짜 발산/진동만 잡는다.
+    //   허용오차 1e-6 은 준퇴화 스펙트럼에서 실제로 도달 가능한 수준이다
+    //   (λ1/λ2=1.011 인 실측 케이스에서 500회 반복 시 상대오차 ~1e-5, 반복당 변화 ~3e-7).
+    const lambdaSettled = Number.isFinite(prevLambda) && Math.abs(lambda - prevLambda) <= 1e-6 * Math.max(1, Math.abs(lambda))
+    prevLambda = lambda
     v = normalized
-    if (Math.abs(Math.abs(dot) - 1) < POWER_ITER_EPS) break
+    if (Math.abs(Math.abs(dot) - 1) < POWER_ITER_EPS || lambdaSettled) {
+      converged = true
+      break
+    }
   }
   // Rayleigh quotient 로 고유값 확정 (부호 포함).
   const mv = matVec(m, v)
   let rayleigh = 0
   for (let i = 0; i < d; i += 1) rayleigh += v[i] * mv[i]
-  return { vector: canonicalSign(v), value: rayleigh }
+  // 음수/영 고유값은 실재하는 분산 축이 아니다 (공분산은 준정부호) → 0 clamp.
+  if (rayleigh <= zeroTol) return zero()
+  return { vector: canonicalSign(v), value: rayleigh, converged }
+}
+
+export type Pca2dOptions = {
+  // 순열검정 null 표본처럼 대량 반복이 필요할 때 iteration 상한을 낮춘다.
+  maxIter?: number
 }
 
 // 상위 2개 주성분으로 각 행을 2D 로 투영한다.
-export function pca2d(rows: number[][]): Pca2dResult {
+export function pca2d(rows: number[][], options: Pca2dOptions = {}): Pca2dResult {
   const n = rows.length
   const d = n > 0 ? rows[0].length : 0
   if (n === 0 || d === 0) {
-    return { points: rows.map(() => ({ x: 0, y: 0 })), components: [[], []], eigenvalues: [0, 0] }
+    return {
+      points: rows.map(() => ({ x: 0, y: 0 })),
+      components: [[], []],
+      eigenvalues: [0, 0],
+      totalVariance: 0,
+      explainedVarianceRatio: 0,
+      converged: true
+    }
   }
   const means = columnMeans(rows)
   const centered = rows.map((r) => r.map((v, j) => v - means[j]))
   const cov = covariance(centered)
+  // 공분산 trace = Σλ (전체 분산). 고유분해 없이 설명분산 분모를 얻는다 (C3).
+  let totalVariance = 0
+  for (let a = 0; a < d; a += 1) totalVariance += cov[a][a]
 
-  const first = dominantEigen(cov, 0x5eed0001)
-  // deflation: C' = C - λ v vᵀ → 2번째 주성분.
+  const first = dominantEigen(cov, 0x5eed0001, { maxIter: options.maxIter })
+  // deflation: C' = C - λ v vᵀ → 2번째 주성분. against 로 첫 축 재직교화까지 강제한다.
   const deflated = cov.map((row, a) => row.map((v, b) => v - first.value * first.vector[a] * first.vector[b]))
-  const second = d > 1 ? dominantEigen(deflated, 0x5eed0002, first.value) : { vector: new Array<number>(d).fill(0), value: 0 }
+  const hasFirst = first.value > 0
+  const second = d > 1 && hasFirst
+    ? dominantEigen(deflated, 0x5eed0002, { scale: first.value, against: [first.vector], maxIter: options.maxIter })
+    : { vector: new Array<number>(d).fill(0), value: 0, converged: true }
 
   const points = centered.map((r) => {
     let x = 0
@@ -262,11 +339,36 @@ export function pca2d(rows: number[][]): Pca2dResult {
     }
     return { x, y }
   })
+  const explained = totalVariance > 0 ? (first.value + second.value) / totalVariance : 0
   return {
     points,
     components: [first.vector, second.vector],
-    eigenvalues: [first.value, second.value]
+    eigenvalues: [first.value, second.value],
+    totalVariance,
+    explainedVarianceRatio: Math.min(1, Math.max(0, explained)),
+    converged: first.converged && second.converged
   }
+}
+
+// ------------------------------------------------------------
+// 3-b) 순열검정용 열별 독립 셔플 (C2)
+// ------------------------------------------------------------
+// 각 statement(열)의 값 집합(=한계분포)은 그대로 두고 참가자 순서만 열마다 독립으로 섞는다.
+// → 발언별 찬반 비율은 보존되고 참가자 간 상관(=그룹 구조)만 파괴된 null 데이터가 된다.
+// 셔플은 고정 시드 PRNG 이므로 순열검정 결과도 결정론적이다.
+export function permuteColumns(rows: number[][], rng: () => number): number[][] {
+  const n = rows.length
+  const d = n > 0 ? rows[0].length : 0
+  const out = rows.map((r) => r.slice())
+  for (let j = 0; j < d; j += 1) {
+    for (let i = n - 1; i > 0; i -= 1) {
+      const swap = Math.floor(rng() * (i + 1))
+      const tmp = out[i][j]
+      out[i][j] = out[swap][j]
+      out[swap][j] = tmp
+    }
+  }
+  return out
 }
 
 // ------------------------------------------------------------
@@ -328,7 +430,7 @@ function relabelDeterministically(labels: number[], centroids: Point2D[]): { lab
 
 export function kmeans(points: Point2D[], k: number, seed = 0x5eedbeef): KmeansResult {
   if (points.length === 0 || k <= 0) {
-    return { labels: [], centroids: [], iterations: 0, converged: true }
+    return { labels: [], centroids: [], iterations: 0, converged: true, emptyClusterCount: 0 }
   }
   const effectiveK = Math.min(k, points.length)
   let centroids = kmeansPlusPlusInit(points, effectiveK, seed)
@@ -369,7 +471,11 @@ export function kmeans(points: Point2D[], k: number, seed = 0x5eedbeef): KmeansR
   }
 
   const relabeled = relabelDeterministically(labels, centroids)
-  return { labels: relabeled.labels, centroids: relabeled.centroids, iterations, converged }
+  // M2: 빈 클러스터는 "요청한 k 가 데이터에 없다"는 신호다. converged 로 덮이지 않게 별도 카운트한다.
+  const finalSizes = new Array<number>(effectiveK).fill(0)
+  for (const l of relabeled.labels) finalSizes[l] += 1
+  const emptyClusterCount = finalSizes.filter((s) => s === 0).length + (k - effectiveK)
+  return { labels: relabeled.labels, centroids: relabeled.centroids, iterations, converged, emptyClusterCount }
 }
 
 // ------------------------------------------------------------

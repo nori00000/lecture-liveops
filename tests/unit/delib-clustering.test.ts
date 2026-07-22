@@ -172,17 +172,22 @@ describe('delib landscape — 소규모 게이트', () => {
     expect(r.projection).toEqual([]);
   });
 
-  it('60명 → k=2 고정', () => {
+  // C6(2026-07-22): 60~99명 k=2 고정 정책은 진짜 3분할을 뭉갰다 (실측: k=2 실루엣 0.532/크기[20,40]
+  // vs k=3 0.836/크기[20,20,20]). "클러스터당 20~30" 문헌은 최소 크기 근거이지 k 상한 근거가 아니다.
+  // → n≥60 이면 k∈{2,3}, n≥100 이면 k∈{2..5}. 클러스터당 20명 규칙은 유지.
+  it('60명 3진영 → k∈{2,3} 중에서 선택 (구 정책의 k=2 고정 폐기)', () => {
     const data = synth({ participants: 60, statements: 10, blocs: 3, noiseEvery: 23 });
     const r = computeLandscape(data);
     expect(r.enabled).toBe(true);
-    expect(r.k).toBe(2);
-    expect(r.clusters).toHaveLength(2);
+    expect(r.k).toBe(3);
+    expect(r.clusters).toHaveLength(3);
+    for (const c of r.clusters) expect(c.size).toBeGreaterThanOrEqual(20);
   });
 
-  it('99명 → 여전히 k=2 고정, 100명 → k 를 2~5 중에서 선택', () => {
+  it('99명 → k 상한 3, 100명 → k 를 2~5 중에서 선택', () => {
     const small = computeLandscape(synth({ participants: 99, statements: 12, blocs: 3, noiseEvery: 23 }));
-    expect(small.k).toBe(2);
+    expect(small.enabled).toBe(true);
+    expect(small.k).toBeLessThanOrEqual(3);
     const large = computeLandscape(synth({ participants: 100, statements: 12, blocs: 3, noiseEvery: 23 }));
     expect(large.enabled).toBe(true);
     expect(large.k).toBeGreaterThanOrEqual(2);
@@ -277,30 +282,46 @@ describe('delib landscape — 프라이버시', () => {
 
 describe('delib landscape — GIC / 대표의견', () => {
   // 두 진영 4명씩. s000 은 전원 찬성(공통), s001/s003 은 A 진영만 찬성, s002 는 B 진영만 찬성.
+  // 소표본 픽스처이므로 노출 임계(H3)를 테스트 규모에 맞춰 낮춘다 — 임계 자체의 검증은
+  // delib-landscape-stats.test.ts 가 실제 규모(120명)에서 담당한다.
   const smallOptions = {
     minVotesPerParticipant: 4,
     minParticipants: 8,
     largeSessionThreshold: 1000,
     minClusterSize: 4,
-    kAnonymityThreshold: 3
+    kAnonymityThreshold: 3,
+    gicMinClusterVotesAbsolute: 3,
+    gicMinClusterVotesFraction: 0.2,
+    representativeMinVotesAbsolute: 3,
+    representativeMinVotesFraction: 0.3
   };
   const data = synth({ participants: 8, statements: 4, blocs: 2 });
 
-  it('GIC — 모든 그룹의 라플라스 스무딩 찬성확률 곱 (수기 계산과 일치)', () => {
+  it('GIC — 그룹별 라플라스 스무딩 찬성확률의 기하평균 (수기 계산과 일치)', () => {
     const r = computeLandscape(data, smallOptions);
     expect(r.enabled).toBe(true);
     expect(r.k).toBe(2);
     expect(r.clusters.map((c) => c.size)).toEqual([4, 4]);
 
-    // 공통 발언 s000: 두 그룹 모두 4/4 찬성 → (5/6) × (5/6) = 0.69444...
+    // H4: 곱 → 기하평균. 곱은 k 가 커질수록 값이 작아져 세션 간 비교가 불가능했다
+    // (전 그룹 90% 찬성인 동일 발언: k=2 에서 0.746, k=5 에서 0.481, k=8 에서 0.310).
+    // 공통 발언 s000: 두 그룹 모두 4/4 찬성 → ((5/6)×(5/6))^(1/2) = 5/6.
     const common = r.gic.find((g) => g.statementId === 's000');
     expect(common).toBeDefined();
-    expect(common!.score).toBeCloseTo((5 / 6) * (5 / 6), 12);
-    // 양극화 발언 s001: 한쪽 4/4 찬성, 다른쪽 0/4 → (5/6) × (1/6) = 0.13888...
+    expect(common!.score).toBeCloseTo(5 / 6, 12);
+    // 양극화 발언 s001: 한쪽 4/4 찬성, 다른쪽 0/4 → ((5/6)×(1/6))^(1/2) = 0.37268...
     const polarized = r.gic.find((g) => g.statementId === 's001');
-    expect(polarized!.score).toBeCloseTo((5 / 6) * (1 / 6), 12);
+    expect(polarized!.score).toBeCloseTo(Math.sqrt((5 / 6) * (1 / 6)), 12);
     // 전 그룹 고른 찬성이 1위 (다수 횡포 방지).
     expect(r.gic[0].statementId).toBe('s000');
+    // H4: 그룹별 표본과 Wilson CI 를 병기한다.
+    expect(common!.perCluster).toHaveLength(2);
+    for (const c of common!.perCluster) {
+      expect(c.votes).toBe(4);
+      expect(c.agreeRate).toBe(1);
+      expect(c.ciLow).toBeLessThanOrEqual(1);
+      expect(c.ciHigh).toBe(1);
+    }
   });
 
   it('GIC — 유효표가 k-익명 임계 미만인 발언은 제외된다', () => {
@@ -311,13 +332,17 @@ describe('delib landscape — GIC / 대표의견', () => {
     expect(r.gic.some((g) => g.statementId === 's003')).toBe(false);
   });
 
-  it('대표 의견 — 그룹 안/밖 찬성확률 차이(lift), 그룹마다 서로 다른 발언이 뽑힌다', () => {
+  it('대표 의견 — 그룹 안/밖 찬성률 차이(lift), 그룹마다 서로 다른 발언이 뽑힌다', () => {
     const r = computeLandscape(data, smallOptions);
     expect(r.representatives.length).toBeGreaterThan(0);
-    // 한쪽만 찬성한 발언은 lift = 5/6 - 1/6 = 0.66667.
+    // C4: lift 는 스무딩 없는 원시 비율 차이다 (검정도 원시 카운트로 한다).
+    // 한쪽만 4/4 찬성, 다른쪽 0/4 → lift = 1 - 0 = 1.
     for (const rep of r.representatives) {
-      expect(rep.lift).toBeCloseTo(5 / 6 - 1 / 6, 12);
+      expect(rep.lift).toBeCloseTo(1, 12);
       expect(rep.agreeRate).toBe(1);
+      // 소표본이므로 Fisher 정확검정 + BH 보정을 거쳐 유의해야 채택된다.
+      expect(rep.test).toBe('fisher');
+      expect(rep.pAdjusted).toBeLessThan(0.05);
       // 전원 찬성인 공통 발언은 lift 0 이라 대표의견이 될 수 없다.
       expect(rep.statementId).not.toBe('s000');
     }
