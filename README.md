@@ -42,6 +42,7 @@ npm run seed:demo     # Deterministic deliberation demo seed
 ## Key Docs
 
 - `docs/PRODUCT-PLAN-v2.md` — product plan and current roadmap
+- `docs/operator-guide.md` — service operator guide and screen-by-screen checks
 - `docs/DELIBERATION-QUALITY-PLAN.md` — Q1-Q6 deliberation quality plan
 - `docs/facilitator-runbook.md` — field runbook
 - `docs/privacy-template.md` — privacy notice template

@@ -42,6 +42,7 @@ npm run seed:demo     # 결정론적 숙의 데모 시드
 ## 핵심 문서
 
 - `docs/PRODUCT-PLAN-v2.md` — 제품 계획과 현재 로드맵
+- `docs/operator-guide.md` — 서비스 운영자 가이드와 화면별 확인 포인트
 - `docs/DELIBERATION-QUALITY-PLAN.md` — Q1-Q6 숙의 품질 계획
 - `docs/facilitator-runbook.md` — 현장 운영 런북
 - `docs/privacy-template.md` — 개인정보 고지문 템플릿
