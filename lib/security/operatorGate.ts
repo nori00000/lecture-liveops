@@ -50,7 +50,9 @@ const PROTECTED_API_PREFIX = '/api/data'
 // 참가자 자체 세션 쿠키로 보호되는 읽기 경로는 operator 게이트에서 제외한다.
 // /api/data/delib/participant-view 는 참가자 신원 쿠키를 자체 검증하므로 operator 키가 없어도 접근 가능해야 한다.
 const EXEMPT_API_PREFIXES = ['/api/data/participant', '/api/data/delib/participant-view']
-const PROTECTED_API_PATHS = new Set(['/api/timeline-sync'])
+// 숙의 결과 리포트 내려받기는 원 발언·절차 증빙을 담으므로 운영자 전용으로 보호한다.
+// (기존 강의 export 경로 /api/export/{markdown,html,xlsx,pdf} 는 영향 없음 — delib 만 격리.)
+const PROTECTED_API_PATHS = new Set(['/api/timeline-sync', '/api/export/delib'])
 
 export function isOperatorProtectedPath(pathname: string): boolean {
   if (PROTECTED_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + '/'))) return true

@@ -103,6 +103,9 @@ export default function WorkshopConsolePage({ params }: { params: Promise<{ id: 
         <ProjectorPublish sessionId={sessionId} snapshots={data?.snapshots ?? []} activeRoundId={data?.activeRound?.id ?? null} busy={busy} onDone={() => mutate()} onError={setError} />
       </div>
 
+      {/* 결과 리포트 내려받기 — 절차 증빙형 납품물 (md/html/xlsx) */}
+      <ReportDownload sessionId={sessionId} />
+
       {/* 투표 진행률 */}
       <Card>
         <CardHeader title="투표 진행률" hint={progress ? `${progress.totalVotes}/${progress.expectedVotes} 표` : undefined} />
@@ -250,6 +253,54 @@ function ProjectorPublish({
           <Button variant="accent" disabled={busy || working} onClick={computeAndPublish}>
             {working ? '발행 중' : '결과 계산 & 발행'}
           </Button>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+function ReportDownload({ sessionId }: { sessionId: string }) {
+  const [busy, setBusy] = useState<null | 'md' | 'html' | 'xlsx'>(null)
+  const [msg, setMsg] = useState('')
+
+  async function download(format: 'md' | 'html' | 'xlsx') {
+    if (busy) return
+    setBusy(format)
+    setMsg('생성 중…')
+    try {
+      const res = await fetch(`/api/export/delib?sessionId=${encodeURIComponent(sessionId)}&format=${format}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      const cd = res.headers.get('content-disposition') ?? ''
+      const m = cd.match(/filename\*=UTF-8''(.+)$/)
+      a.download = m ? decodeURIComponent(m[1]) : `report.${format}`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      setMsg('완료')
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : '실패')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader title="결과 리포트 내려받기" hint="절차 증빙형 납품물 (합의점·쟁점·소수의견·원자료 연결)" />
+      <div className="p-4 space-y-3">
+        <p className="text-xs text-textMute">
+          라운드별 합의점·쟁점·소수의견과 원자료(집계)를 연결한 납품 리포트를 내려받습니다. 개인 투표 원자료는 포함되지 않습니다.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant="accent" disabled={busy !== null} onClick={() => download('md')}>{busy === 'md' ? '생성 중…' : 'Markdown'}</Button>
+          <Button size="sm" disabled={busy !== null} onClick={() => download('html')}>{busy === 'html' ? '생성 중…' : 'HTML'}</Button>
+          <Button size="sm" disabled={busy !== null} onClick={() => download('xlsx')}>{busy === 'xlsx' ? '생성 중…' : 'Excel'}</Button>
+          {msg ? <span className="text-[11px] text-textDim">{msg}</span> : null}
         </div>
       </div>
     </Card>
