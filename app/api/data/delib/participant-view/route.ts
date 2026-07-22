@@ -5,6 +5,7 @@ import { sessions, delibRounds, delibGroups, statements, votes, participants } f
 import { adminContext } from '@/lib/db/neonHelpers'
 import { PARTICIPANT_SESSION_COOKIE, readParticipantSession } from '@/lib/participantSession'
 import { toStatementCard } from '@/lib/delib/views'
+import { readRecordingConsent } from '@/lib/action/handlers/delib'
 
 // 참가자 모바일 뷰 — 현재 라운드·내 그룹·제출 가능 여부·내가 낸 의견·투표 대상 statement 목록.
 // operator 게이트 제외(operatorGate EXEMPT). 신원은 서명된 참가자 쿠키에서만 검증한다.
@@ -51,7 +52,9 @@ const ParticipantViewSchema = z.object({
   votable: z.array(StatementCardSchema),
   myVotes: z.record(z.enum(['agree', 'disagree', 'pass'])),
   participantCount: z.number(),
-  anonymity: z.object({ available: z.boolean(), minParticipants: z.number() })
+  anonymity: z.object({ available: z.boolean(), minParticipants: z.number() }),
+  // 녹음·전사 동의 상태 — 참가자 화면 "녹음 중" 상시 배너 조건 (transcript-architecture §4).
+  recording: z.object({ active: z.boolean(), consentAt: z.string().nullable() })
 })
 
 export async function GET() {
@@ -123,7 +126,11 @@ export async function GET() {
     votable,
     myVotes,
     participantCount,
-    anonymity: { available: anonymityAvailable, minParticipants: ANON_MIN_PARTICIPANTS }
+    anonymity: { available: anonymityAvailable, minParticipants: ANON_MIN_PARTICIPANTS },
+    recording: (() => {
+      const rc = readRecordingConsent(session.metadata)
+      return { active: rc.active, consentAt: rc.consentAt }
+    })()
   })
 
   return NextResponse.json(payload, {

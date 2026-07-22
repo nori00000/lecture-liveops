@@ -23,6 +23,8 @@ export default function WorkshopSettingsPage({ params }: { params: Promise<{ id:
   const [settings, setSettings] = useState<Settings>(DEFAULTS)
   const [consent, setConsent] = useState(false)
   const [minorConsent, setMinorConsent] = useState(false)
+  // 녹음·전사 동의 — 기본 꺼짐. 켜야만 전사 수집 경로가 서버에서 열린다(transcript-architecture §4).
+  const [recordingConsent, setRecordingConsent] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
 
@@ -47,7 +49,10 @@ export default function WorkshopSettingsPage({ params }: { params: Promise<{ id:
         retentionDays: Number(settings.retentionDays),
         minorSession: settings.minorSession,
         consentConfirmed: consentSatisfied,
-        minorConsent: settings.minorSession ? minorConsent : false
+        minorConsent: settings.minorSession ? minorConsent : false,
+        // 사전합의가 없으면 녹음 동의도 성립하지 않는다(서버가 모순 상태를 거부).
+        recordingConsent: consentSatisfied && recordingConsent,
+        offsiteProcessing: false
       }
     })
     if (!res?.ok) throw new Error(res?.error ?? '설정 저장 실패')
@@ -110,6 +115,35 @@ export default function WorkshopSettingsPage({ params }: { params: Promise<{ id:
             checked={settings.minorSession}
             onChange={(v) => update({ minorSession: v })}
           />
+        </div>
+      </Card>
+
+      {/* 녹음·전사 동의 게이트 (§7-8) — 동의 없이는 서버가 전사 수집을 거부한다 */}
+      <Card>
+        <CardHeader title="녹음·전사" hint="동의한 세션만 전사를 수집합니다" />
+        <div className="p-4 space-y-3">
+          <ToggleRow
+            label="녹음·전사 수집"
+            hint="테이블 단위 음성을 텍스트로 전사합니다. 발언자 개인은 식별하지 않으며, 원음성은 현장 기기를 떠나지 않습니다."
+            checked={recordingConsent}
+            onChange={setRecordingConsent}
+          />
+          {recordingConsent ? (
+            <div className="rounded-md border border-border bg-surfaceAlt/60 p-3 space-y-2">
+              <p className="text-xs text-textDim">
+                <strong>참가자 고지 문구(현장 낭독용):</strong> 이 워크숍에서는 테이블별 논의를 녹음해 텍스트로 전사합니다.
+                누가 말했는지는 기록하지 않고, 테이블 단위 논의 요약에만 사용합니다. 전사 텍스트는 보관기간 만료 시
+                삭제되며, 원음성은 워크숍 종료 후 현장 기기에서 자동 삭제됩니다.
+              </p>
+              <p className="text-xs text-warn">
+                <strong>미동의 참가자 보호:</strong> 동의하지 않는 참가자가 있으면 <strong>해당 테이블은 녹음하지 않거나</strong>,
+                녹음 구역 밖 좌석으로 안내합니다. 미동의자가 있는 테이블의 마이크는 켜지 않습니다.
+              </p>
+              {!consentSatisfied ? (
+                <p className="text-xs text-danger">사전 합의를 먼저 완료해야 녹음 동의가 저장됩니다.</p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </Card>
 

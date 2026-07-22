@@ -7,6 +7,7 @@ import { swrFetcher } from '@/lib/api/fetcher'
 import { invoke } from '@/lib/util/envelope'
 import { Badge, Button, Card, CardHeader, Input, PageHeader, Select, Textarea } from '@/components/ui/primitives'
 import { VoteControls } from '@/components/delib/VoteControls'
+import { RecordingBanner } from '@/components/delib/RecordingBanner'
 import type { VoteValue } from '@/lib/db/schema'
 
 type Member = { participantId: string; alias: string }
@@ -35,6 +36,7 @@ type ConsoleData = {
   moderationQueue?: StatementCard[]
   voteProgress?: { totalVotes: number; expectedVotes: number; ratio: number }
   snapshots?: { id: string; roundId: string | null; computedAt: string; publishedAt: string | null }[]
+  recording?: { active: boolean; consentAt: string | null; offsiteProcessing: boolean }
 }
 
 // 콘솔 폴링 2~5초 (§3). 운영 조작 후엔 mutate()로 즉시 반영.
@@ -95,6 +97,9 @@ export default function WorkshopConsolePage({ params }: { params: Promise<{ id: 
           </div>
         }
       />
+
+      {/* 녹음·전사 상시 배너 — 동의된 세션에서만 노출 */}
+      <RecordingBanner active={data?.recording?.active === true} audience="operator" />
 
       {error ? <div role="alert" className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div> : null}
 

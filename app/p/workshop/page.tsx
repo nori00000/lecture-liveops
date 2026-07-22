@@ -7,6 +7,7 @@ import { swrFetcher } from '@/lib/api/fetcher'
 import { invoke } from '@/lib/util/envelope'
 import { Card, CardHeader, Badge, Button, Textarea, PageHeader } from '@/components/ui/primitives'
 import { VoteControls } from '@/components/delib/VoteControls'
+import { RecordingBanner } from '@/components/delib/RecordingBanner'
 import type { VoteValue } from '@/lib/db/schema'
 
 type StatementCard = {
@@ -31,6 +32,7 @@ type Data = {
   myVotes?: Record<string, VoteValue>
   participantCount?: number
   anonymity?: { available: boolean; minParticipants: number }
+  recording?: { active: boolean; consentAt: string | null }
 }
 
 // 참가자용 폴링: 개별 폰 결과는 저부하 원칙(§3, N3)에 맞춰 12초 간격.
@@ -128,6 +130,9 @@ export default function ParticipantWorkshopPage() {
           desc={data?.session ? `${data.session.title} · ${data.session.date}` : '불러오는 중...'}
           right={data?.myGroupId ? <Badge tone="info">내 그룹 배정됨</Badge> : <Badge tone="neutral">그룹 미배정</Badge>}
         />
+
+        {/* 녹음·전사 상시 배너 — 동의된 세션에서만 노출 */}
+        <RecordingBanner active={data?.recording?.active === true} audience="participant" />
 
         {/* §7-1: 익명 최소 임계 안내 */}
         {data?.anonymity && !data.anonymity.available ? (

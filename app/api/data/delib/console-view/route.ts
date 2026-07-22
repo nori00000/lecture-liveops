@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { sessions, delibRounds, delibGroups, participants, statements, votes, landscape } from '@/lib/db/repo'
 import { adminContext } from '@/lib/db/neonHelpers'
 import { toConsoleCard } from '@/lib/delib/views'
+import { readRecordingConsent } from '@/lib/action/handlers/delib'
 
 // 퍼실리테이터 콘솔 데이터 — 그룹별 현황, moderation 큐, 투표 진행률.
 // operator 전용: /api/data 하위이므로 미들웨어 operator 게이트가 자동 보호.
@@ -74,6 +75,8 @@ export async function GET(req: Request) {
     statements: cards,
     moderationQueue,
     voteProgress: { totalVotes, expectedVotes, ratio: voteProgress },
+    // 녹음·전사 동의 상태 — 콘솔 "녹음 중" 상시 배너 조건 (transcript-architecture §4).
+    recording: readRecordingConsent(session.metadata),
     snapshots: snaps.map((s) => ({ id: s.id, roundId: s.round_id, computedAt: s.computed_at, publishedAt: s.published_at }))
   })
 }

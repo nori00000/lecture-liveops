@@ -26,6 +26,11 @@ export type PrivacySettings = {
   minorSession: boolean
   consentConfirmed: boolean
   minorConsent: boolean
+  // 녹음·전사 동의 (transcript-architecture §4). 전사 수집 경로는 이 플래그 없이는 열리지 않는다.
+  recordingConsent: boolean
+  recordingConsentAt: string | null
+  // 오프사이트(현장 박스 밖) 처리 허용 — 기본 false, 코드가 거부한다 (architecture §1).
+  offsiteProcessing: boolean
   updatedAt: string
 }
 
@@ -36,7 +41,9 @@ const UpdateWorkshopSettingsInput = z.object({
   retentionDays: z.number().int().positive(),
   minorSession: z.boolean(),
   consentConfirmed: z.boolean(),
-  minorConsent: z.boolean().optional()
+  minorConsent: z.boolean().optional(),
+  recordingConsent: z.boolean().optional(),
+  offsiteProcessing: z.boolean().optional()
 })
 
 // 세션 metadata 에서 privacy_settings 를 안전하게 추출 (없거나 형태 불일치면 undefined).
@@ -60,12 +67,65 @@ async function assertConsentConfirmed(ctx: ReturnType<typeof envelopeToCtx>, ses
   }
 }
 
-// 운영자 전용 — 프라이버시/공개범위/보관기간/사전합의를 세션 metadata 에 영속화한다.
+// 녹음·전사 동의 상태를 privacy_settings 에서 안전하게 읽는다 (배너·게이트 공용).
+// 미설정 세션은 전부 false — fail-closed.
+export function readRecordingConsent(metadata: Record<string, unknown> | undefined): {
+  active: boolean
+  consentAt: string | null
+  offsiteProcessing: boolean
+} {
+  const ps = readPrivacySettings(metadata)
+  const active = ps?.recordingConsent === true
+  return {
+    active,
+    consentAt: active && typeof ps?.recordingConsentAt === 'string' ? ps.recordingConsentAt : null,
+    offsiteProcessing: ps?.offsiteProcessing === true
+  }
+}
+
+// 전사 수집 서버 게이트 — 전사 ingest 계열 액션·라우트가 재사용한다 (transcript-architecture §4).
+// recordingConsent 없이는 전사 데이터가 한 건도 들어올 수 없다. 사전합의(consentConfirmed)가 선행 조건.
+export async function enforceRecordingConsent(
+  ctx: ReturnType<typeof envelopeToCtx>,
+  sessionId: string
+): Promise<void> {
+  const session = await sessions.findById(ctx, sessionId)
+  if (!session) throw new Error('delib: session not found')
+  const ps = readPrivacySettings(session.metadata)
+  if (!ps || ps.consentConfirmed !== true) {
+    throw new Error('delib: privacy consent not confirmed')
+  }
+  if (ps.recordingConsent !== true) {
+    throw new Error('delib: recording consent not confirmed')
+  }
+}
+
+// 녹음 동의 설정의 정합성 검증 — 저장 시점에 모순 상태를 거부한다.
+//  - 사전합의(consentConfirmed) 없이 녹음 동의만 켜는 것 금지
+//  - 오프사이트 처리는 녹음 동의 + 별도 계약 전제 (architecture §1) → 녹음 동의 없이는 거부
+function assertRecordingConsistency(consentConfirmed: boolean, recordingConsent: boolean, offsiteProcessing: boolean): void {
+  if (recordingConsent && !consentConfirmed) {
+    throw new Error('delib: recording consent requires privacy consent')
+  }
+  if (offsiteProcessing && !recordingConsent) {
+    throw new Error('delib: offsite processing requires recording consent')
+  }
+}
+
+// 운영자 전용 — 프라이버시/공개범위/보관기간/사전합의/녹음동의를 세션 metadata 에 영속화한다.
 export const updateWorkshopSettings: Handler = async ({ envelope }) => {
   const input = UpdateWorkshopSettingsInput.parse(envelope.input)
   const ctx = envelopeToCtx(envelope)
   const session = await sessions.findById(ctx, input.sessionId)
   if (!session) throw new Error('delib: session not found')
+  const recordingConsent = input.recordingConsent === true
+  const offsiteProcessing = input.offsiteProcessing === true
+  assertRecordingConsistency(input.consentConfirmed, recordingConsent, offsiteProcessing)
+  // 동의 시각은 최초 동의 시점을 보존한다(재저장으로 갱신되지 않음). 동의 해제 시 null.
+  const prev = readPrivacySettings(session.metadata)
+  const recordingConsentAt = recordingConsent
+    ? (prev?.recordingConsent === true && typeof prev.recordingConsentAt === 'string' ? prev.recordingConsentAt : nowIso())
+    : null
   const privacy_settings: PrivacySettings = {
     anonymousMode: input.anonymousMode,
     disclosure: input.disclosure,
@@ -73,6 +133,9 @@ export const updateWorkshopSettings: Handler = async ({ envelope }) => {
     minorSession: input.minorSession,
     consentConfirmed: input.consentConfirmed,
     minorConsent: input.minorConsent ?? false,
+    recordingConsent,
+    recordingConsentAt,
+    offsiteProcessing,
     updatedAt: nowIso()
   }
   // 기존 metadata 다른 필드(capacity/tables 등)를 보존하며 privacy_settings 만 병합.
