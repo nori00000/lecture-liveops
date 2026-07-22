@@ -26,6 +26,7 @@ beforeAll(() => {
 import {
   updateWorkshopSettings,
   createWorkshop,
+  registerParticipant,
   submitStatement,
   moderateStatement,
   computeSnapshot,
@@ -77,6 +78,18 @@ async function bootRound(): Promise<string> {
 async function newStatement(roundId: string, body: string, evidenceKind?: EvidenceKind): Promise<string> {
   const r = await submitStatement({
     envelope: env('delib.submit_statement', 'instructor', { sessionId: SID, roundId, body, evidenceKind })
+  });
+  return (r.data as { statementId: string }).statementId;
+}
+
+async function newParticipantStatement(roundId: string, n: number, body: string, evidenceKind?: EvidenceKind): Promise<string> {
+  const p = await registerParticipant({
+    envelope: env('delib.register_participant', 'instructor', { sessionId: SID, displayAlias: `참가자${n}`, anonHandle: `anon-${n}` })
+  });
+  const participantId = (p.data as { participantId: string }).participantId;
+  const r = await submitStatement({
+    envelope: env('delib.submit_statement', 'participant', { sessionId: SID, roundId, body, evidenceKind }),
+    trusted: { participantId }
   });
   return (r.data as { statementId: string }).statementId;
 }
@@ -180,6 +193,38 @@ describe('Q2 검토 후보 (fixture mode)', () => {
     await expect(
       reviewAiObservation({ envelope: env('delib.review_ai_observation', 'instructor', { observationId: pending[0].id, decision: 'approve' }) })
     ).rejects.toThrow(/already reviewed/);
+  });
+
+  it('리포트는 Q1/Q2 품질 게이트와 Q5 착수 조건을 집계한다', async () => {
+    const round = await bootRound();
+    await newParticipantStatement(round, 1, ASSERTIVE_BODY, 'estimate');
+    await newParticipantStatement(round, 2, AMBIGUOUS_BODY, 'estimate');
+    await newParticipantStatement(round, 3, '추정 기반 추가 의견입니다', 'estimate');
+    await newParticipantStatement(round, 4, '자료가 확인된 의견입니다', 'source');
+    await newParticipantStatement(round, 5, '출처가 있는 보완 의견입니다', 'source');
+    await newParticipantStatement(round, 6, '통계 자료를 확인한 의견입니다', 'source');
+    await computeCandidates();
+    const pending = await aiObservations.list(adminContext(SID), SID, { status: 'pending' });
+    expect(pending).toHaveLength(2);
+
+    await reviewAiObservation({ envelope: env('delib.review_ai_observation', 'instructor', { observationId: pending[0].id, decision: 'approve' }) });
+    await reviewAiObservation({ envelope: env('delib.review_ai_observation', 'instructor', { observationId: pending[1].id, decision: 'reject', reason: '파일럿 오탐' }) });
+
+    const report = await buildWorkshopReport(adminContext(SID), SID);
+    expect(report!.qualityMetrics.q1EstimateTag.estimateRatio).toBeCloseTo(0.5);
+    expect(report!.qualityMetrics.q1EstimateTag.status).toBe('pass');
+    expect(report!.qualityMetrics.q2ReviewAdoption.reviewedCount).toBe(2);
+    expect(report!.qualityMetrics.q2ReviewAdoption.approvedCount).toBe(1);
+    expect(report!.qualityMetrics.q2ReviewAdoption.rejectedCount).toBe(1);
+    expect(report!.qualityMetrics.q2ReviewAdoption.adoptionRate).toBeCloseTo(0.5);
+    expect(report!.qualityMetrics.q2ReviewAdoption.status).toBe('pass');
+    expect(report!.qualityMetrics.q5Prerequisite.status).toBe('pass');
+
+    const md = planDelibMarkdownDocument(report!);
+    const html = planDelibHtmlExport(report!);
+    expect(md).toContain('숙의 품질 게이트');
+    expect(md).toContain('Q5 공통지반 요약 착수 조건');
+    expect(html).toContain('숙의 품질 게이트');
   });
 
   it('provider 실패(도달 불가 엔드포인트)여도 리포트는 AI 섹션 없이 정상 발행된다', async () => {

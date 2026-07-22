@@ -156,6 +156,33 @@ export type ReportModeration = {
   events: ReportModerationEvent[]
 }
 
+export type QualityMetricStatus = 'pass' | 'fail' | 'insufficient_data'
+
+export type ReportQualityMetrics = {
+  // Q1 kill 기준: "추정" 태그 선택률이 5% 미만 또는 80% 초과면 재설계.
+  q1EstimateTag: {
+    visibleStatementCount: number
+    estimateCount: number
+    estimateRatio: number | null
+    status: QualityMetricStatus
+  }
+  // Q2 kill/측정 기준: 승인/기각된 후보 중 승인률(채택률) 30% 이상이면 유지.
+  q2ReviewAdoption: {
+    pendingCount: number
+    approvedCount: number
+    rejectedCount: number
+    reviewedCount: number
+    adoptionRate: number | null
+    rejectionRate: number | null
+    status: QualityMetricStatus
+  }
+  // Q5는 바로 만들지 않는다. P2 실측이 없으면 공통지반 요약 착수 조건이 아직 충족되지 않은 상태로 표기한다.
+  q5Prerequisite: {
+    status: QualityMetricStatus
+    reason: string
+  }
+}
+
 export type WorkshopReport = {
   overview: {
     sessionId: string
@@ -180,6 +207,8 @@ export type WorkshopReport = {
   rawData: ReportRawStatement[]
   // Q2: 승인된 "검토가 필요한 주장"만. 0건이면 빈 배열이고 포맷터는 섹션 자체를 넣지 않는다.
   aiObservations: ReportAiObservation[]
+  // 숙의 품질 기능의 사전등록 kill/착수 게이트. 리포트 개요에 노출해 파일럿 후 판단을 남긴다.
+  qualityMetrics: ReportQualityMetrics
 }
 
 // StatementMetric → ReportResultItem. body/round/group 은 발언 메타에서 채운다.
@@ -267,6 +296,16 @@ function readProcedure(metadata: Record<string, unknown> | undefined): WorkshopR
     minorSession: obj.minorSession === true,
     consentConfirmed: obj.consentConfirmed === true
   }
+}
+
+function statusForEstimateRatio(ratio: number | null): QualityMetricStatus {
+  if (ratio == null) return 'insufficient_data'
+  return ratio >= 0.05 && ratio <= 0.8 ? 'pass' : 'fail'
+}
+
+function statusForAdoptionRate(rate: number | null): QualityMetricStatus {
+  if (rate == null) return 'insufficient_data'
+  return rate >= 0.3 ? 'pass' : 'fail'
 }
 
 // 워크숍 리포트 데이터 조립 — 행사 개요·절차 설정·라운드별 결과·moderation·원자료.
@@ -390,6 +429,61 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
         }))
     )
 
+  // Q1/Q2/Q5 게이트 요약 — 파일럿 후 다음 단계(Q5) 착수 여부를 리포트에서 바로 판정할 수 있게 한다.
+  const visibleStatements = allStatements.filter((s) => s.moderation_state === 'visible')
+  const sessionEvidence = computeEvidenceKindDistribution(
+    visibleStatements.map((s) => ({
+      statementId: s.id,
+      roundId: s.round_id,
+      groupId: null,
+      evidenceKind: s.evidence_kind,
+      authorParticipantId: s.author_participant_id
+    }))
+  )
+  const q1EstimateRatio = sessionEvidence.overall.suppressed || sessionEvidence.overall.total === 0
+    ? null
+    : sessionEvidence.overall.ratios.estimate
+
+  let allAiObservationRows: Awaited<ReturnType<typeof aiObservations.list>> = []
+  try {
+    allAiObservationRows = await aiObservations.list(ctx, sessionId)
+  } catch (e) {
+    console.error(`[delib-report] ai observation metrics unavailable: ${e instanceof Error ? e.name : 'unknown'}`)
+  }
+  const approvedCount = allAiObservationRows.filter((o) => o.status === 'approved').length
+  const rejectedCount = allAiObservationRows.filter((o) => o.status === 'rejected').length
+  const pendingCount = allAiObservationRows.filter((o) => o.status === 'pending').length
+  const reviewedCount = approvedCount + rejectedCount
+  const q2AdoptionRate = reviewedCount > 0 ? approvedCount / reviewedCount : null
+  const q2Status = statusForAdoptionRate(q2AdoptionRate)
+  const q5Status: QualityMetricStatus = q2Status === 'pass' ? 'pass' : q2Status
+  const q5Reason = q5Status === 'pass'
+    ? 'P2 검토 후보 채택률 게이트는 통과했습니다. 공통지반 요약은 별도 파일럿에서 수정률 ≤ 50%를 추가 확인해야 합니다.'
+    : q5Status === 'fail'
+      ? 'P2 검토 후보 채택률이 30% 미만입니다. 공통지반 요약(Q5) 착수 전에 Q2 품질을 재측정해야 합니다.'
+      : '승인/기각된 Q2 후보가 없어 P2 실측이 부족합니다. 공통지반 요약(Q5)은 아직 착수 조건 미충족입니다.'
+  const qualityMetrics: ReportQualityMetrics = {
+    q1EstimateTag: {
+      visibleStatementCount: sessionEvidence.overall.suppressed ? visibleStatements.length : sessionEvidence.overall.total,
+      estimateCount: sessionEvidence.overall.suppressed ? 0 : sessionEvidence.overall.counts.estimate,
+      estimateRatio: q1EstimateRatio,
+      status: statusForEstimateRatio(q1EstimateRatio)
+    },
+    q2ReviewAdoption: {
+      pendingCount,
+      approvedCount,
+      rejectedCount,
+      reviewedCount,
+      adoptionRate: q2AdoptionRate,
+      rejectionRate: reviewedCount > 0 ? rejectedCount / reviewedCount : null,
+      status: q2Status
+    },
+    q5Prerequisite: {
+      status: q5Status,
+      reason: q5Reason
+    }
+  }
+
   const reportRounds: ReportRound[] = rounds.map((r) => {
     const published = publishedByRound.get(r.id)
     if (published) {
@@ -467,6 +561,7 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
     rounds: reportRounds,
     moderation: { total: events.length, byAction, events },
     rawData,
-    aiObservations: reportAiObservations
+    aiObservations: reportAiObservations,
+    qualityMetrics
   }
 }

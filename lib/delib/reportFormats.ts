@@ -6,7 +6,7 @@
 
 import ExcelJS from 'exceljs'
 import type { ExportFile } from '@/lib/export/markdown'
-import type { WorkshopReport, ReportRound, ReportResultItem, ReportRawStatement, ReportLandscape, ReportAiObservation } from './report'
+import type { WorkshopReport, ReportRound, ReportResultItem, ReportRawStatement, ReportLandscape, ReportAiObservation, QualityMetricStatus } from './report'
 import type { EvidenceKindBreakdown, EvidenceKindDistribution } from './metrics'
 
 const DISCLOSURE_LABEL: Record<string, string> = {
@@ -26,6 +26,28 @@ function tallyText(item: { agree: number; disagree: number; pass: number; total:
 
 function pct(n: number): string {
   return `${Math.round(n * 100)}%`
+}
+
+function maybePct(n: number | null): string {
+  return n == null ? '실측 부족' : pct(n)
+}
+
+function qualityStatusLabel(status: QualityMetricStatus): string {
+  if (status === 'pass') return '통과'
+  if (status === 'fail') return '재검토'
+  return '실측 부족'
+}
+
+function qualitySummaryMd(report: WorkshopReport): string {
+  const q = report.qualityMetrics
+  return (
+    `## 숙의 품질 게이트\n` +
+    `- Q1 추정 태그 비율: ${maybePct(q.q1EstimateTag.estimateRatio)} ` +
+    `(추정 ${q.q1EstimateTag.estimateCount}건 / visible 발언 ${q.q1EstimateTag.visibleStatementCount}건) — ${qualityStatusLabel(q.q1EstimateTag.status)}\n` +
+    `- Q2 검토 후보 채택률: ${maybePct(q.q2ReviewAdoption.adoptionRate)} ` +
+    `(승인 ${q.q2ReviewAdoption.approvedCount} · 기각 ${q.q2ReviewAdoption.rejectedCount} · 대기 ${q.q2ReviewAdoption.pendingCount}) — ${qualityStatusLabel(q.q2ReviewAdoption.status)}\n` +
+    `- Q5 공통지반 요약 착수 조건: ${qualityStatusLabel(q.q5Prerequisite.status)} — ${q.q5Prerequisite.reason}\n`
+  )
 }
 
 // F3: 결과 섹션의 근거 스냅샷 출처 — 발행본이면 snapshotId·집계·발행 시각, 미발행이면 생성 시점 집계 표기.
@@ -180,7 +202,8 @@ export function planDelibMarkdownExport(report: WorkshopReport): ExportFile[] {
     `- 공개 범위: ${disclosureLabel(p.disclosure)}\n` +
     `- 보관 기간: ${p.retentionDays != null ? `${p.retentionDays}일` : '(미지정)'}\n` +
     `- 미성년자 세션: ${p.minorSession ? '예' : '아니오'}\n` +
-    `- 사전 합의 확정: ${p.consentConfirmed ? '확정' : '미확정'}\n`
+    `- 사전 합의 확정: ${p.consentConfirmed ? '확정' : '미확정'}\n\n` +
+    qualitySummaryMd(report)
 
   const rounds =
     `# 라운드별 결과\n\n` +
@@ -356,6 +379,7 @@ function htmlEvidence(e: EvidenceKindBreakdown): string {
 export function planDelibHtmlExport(report: WorkshopReport): string {
   const o = report.overview
   const p = report.procedure
+  const q = report.qualityMetrics
 
   const roundsHtml = report.rounds.length === 0
     ? '<p class="empty">(라운드 없음)</p>'
@@ -458,6 +482,13 @@ export function planDelibHtmlExport(report: WorkshopReport): string {
   <dt>사전 합의</dt><dd>${p.consentConfirmed ? '확정' : '미확정'}</dd>
 </dl>
 
+<h2>숙의 품질 게이트</h2>
+<dl>
+  <dt>Q1 추정 태그 비율</dt><dd>${esc(maybePct(q.q1EstimateTag.estimateRatio))} (추정 ${q.q1EstimateTag.estimateCount}건 / visible 발언 ${q.q1EstimateTag.visibleStatementCount}건) — ${esc(qualityStatusLabel(q.q1EstimateTag.status))}</dd>
+  <dt>Q2 후보 채택률</dt><dd>${esc(maybePct(q.q2ReviewAdoption.adoptionRate))} (승인 ${q.q2ReviewAdoption.approvedCount} · 기각 ${q.q2ReviewAdoption.rejectedCount} · 대기 ${q.q2ReviewAdoption.pendingCount}) — ${esc(qualityStatusLabel(q.q2ReviewAdoption.status))}</dd>
+  <dt>Q5 착수 조건</dt><dd>${esc(qualityStatusLabel(q.q5Prerequisite.status))} — ${esc(q.q5Prerequisite.reason)}</dd>
+</dl>
+
 <h2>라운드별 결과</h2>
 ${roundsHtml}
 
@@ -485,6 +516,7 @@ export async function planDelibXlsxBuffer(report: WorkshopReport): Promise<Buffe
   const overview = wb.addWorksheet('개요')
   const o = report.overview
   const p = report.procedure
+  const q = report.qualityMetrics
   overview.columns = [{ width: 20 }, { width: 60 }]
   overview.addRows([
     ['세션', `${o.title} (${o.sessionId})`],
@@ -498,7 +530,11 @@ export async function planDelibXlsxBuffer(report: WorkshopReport): Promise<Buffe
     ['공개 범위', disclosureLabel(p.disclosure)],
     ['보관 기간', p.retentionDays != null ? `${p.retentionDays}일` : '(미지정)'],
     ['미성년자 세션', p.minorSession ? '예' : '아니오'],
-    ['사전 합의', p.consentConfirmed ? '확정' : '미확정']
+    ['사전 합의', p.consentConfirmed ? '확정' : '미확정'],
+    ['품질 게이트', ''],
+    ['Q1 추정 태그 비율', `${maybePct(q.q1EstimateTag.estimateRatio)} — ${qualityStatusLabel(q.q1EstimateTag.status)} (추정 ${q.q1EstimateTag.estimateCount} / visible ${q.q1EstimateTag.visibleStatementCount})`],
+    ['Q2 후보 채택률', `${maybePct(q.q2ReviewAdoption.adoptionRate)} — ${qualityStatusLabel(q.q2ReviewAdoption.status)} (승인 ${q.q2ReviewAdoption.approvedCount} / 기각 ${q.q2ReviewAdoption.rejectedCount} / 대기 ${q.q2ReviewAdoption.pendingCount})`],
+    ['Q5 착수 조건', `${qualityStatusLabel(q.q5Prerequisite.status)} — ${q.q5Prerequisite.reason}`]
   ])
   // F3: 라운드별 결과 근거 스냅샷 출처 (snapshotId·집계·발행 시각 또는 미발행 표시).
   for (const r of report.rounds) {
