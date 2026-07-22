@@ -1,60 +1,59 @@
-[English](README.md) | [한국어](README.ko.md)
+# Lecture LiveOps
 
-[English](README.md) | [한국어](README.ko.md)
+Lecture LiveOps는 강의 현장과 숙의 워크숍을 운영하기 위한 퍼실리테이터 콘솔입니다.
 
-<div align="center">
+현재 제품의 중심은 숙의 워크플로우입니다. 참가자는 access key로 입장해 의견을 제출하고 찬성/반대/유보 투표를 합니다. 퍼실리테이터는 합의점, 쟁점, 소수의견, moderation 로그, 근거 유형 분포, 품질 게이트 지표가 연결된 절차 증빙형 리포트를 납품할 수 있습니다.
 
-# lecture-liveops
+## 현재 상태
 
-![hero](assets/hero.png)
+- 숙의 MVP 0-4단계 구현 완료.
+- Post-MVP 의견 지형 통계는 통계 게이트 뒤에 구현 완료.
+- 전사 동의와 스키마 기반은 구현 완료. 전사 ingest 파이프라인은 의도적으로 아직 미구현.
+- 숙의 품질 지원 Q1-Q4 구현 완료.
+- Q5 공통지반 자연어 요약은 파일럿 실측으로 선행 품질 기준을 통과한 뒤 착수.
 
-lecture-liveops — a project.
-
-![License](https://img.shields.io/badge/License-MIT-yellow.svg) ![Status](https://img.shields.io/badge/status-active-brightgreen.svg) ![Maintained](https://img.shields.io/badge/maintained-yes-success.svg) ![PRs](https://img.shields.io/badge/PRs-welcome-blueviolet.svg) ![Made%20with](https://img.shields.io/badge/made%20with-%E2%9D%A4-red.svg) ![Node](https://img.shields.io/badge/node-%3E%3D18-339933.svg) ![npm](https://img.shields.io/badge/npm-package-CB3837.svg) ![Conventional%20Commits](https://img.shields.io/badge/commits-conventional-FE5196.svg)
-
-</div>
-
----
-
-## 🌟 Highlights
-
-- ⚡ **lecture-liveops** — lecture-liveops — a project.
-- 🧩 type: `node` 프로젝트, 한 번에 셋업.
-- 🔒 안전 기본값 — 시크릿 누출 차단, private 문서 분리.
-- 📈 Conventional Commits + 자동 CHANGELOG + semver 릴리스.
-
-## 🚀 Quick Start
+## 실행
 
 ```bash
-git clone https://github.com/Son/lecture-liveops.git
-cd lecture-liveops
-make init        # 또는 프로젝트 진입점 실행
+npm install
+cp .env.example .env.local
+npm run dev
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](.github/SECURITY.md), and [SUPPORT.md](.github/SUPPORT.md) for project documentation.
+기본 개발 경로는 DB 없이 fixture mode로 동작합니다.
 
-## 📸 Gallery
+프로덕션 모드는 fail-closed입니다. `DATABASE_URL`은 Neon/Postgres를 가리켜야 하고, `AUTH_SECRET`도 필요합니다. 로컬에서 production build를 확인할 때도 환경변수를 넣어야 합니다.
 
-| | | |
-|---|---|---|
-| ![g1](assets/gallery-1.png) | ![g2](assets/gallery-2.png) | ![g3](assets/gallery-3.png) |
-
-## 📊 Architecture
-
-```mermaid
-flowchart LR
-  A[Input] --> B[lecture-liveops core]
-  B --> C[Gates / QA]
-  C -->|pass| D[Output]
-  C -->|fail| B
+```bash
+DATABASE_URL=postgres://user:pass@localhost:5432/liveops AUTH_SECRET=local-build-secret npm run build
 ```
 
-![architecture](assets/architecture.png)
+## 주요 스크립트
 
-## 🤝 Contributing
+```bash
+npm run dev           # Next.js dev server, port 3010
+npm run lint          # ESLint
+npm run typecheck     # TypeScript
+npm test              # Vitest
+npm run build         # Production build, production env 필요
+npm run seed:demo     # 결정론적 숙의 데모 시드
+```
 
-이슈와 PR을 환영합니다. [PULL_REQUEST_TEMPLATE](.github/PULL_REQUEST_TEMPLATE.md) 와 [SECURITY](.github/SECURITY.md) 를 확인하세요.
+## 핵심 문서
 
-## 📝 License
+- `docs/PRODUCT-PLAN-v2.md` — 제품 계획과 현재 로드맵
+- `docs/DELIBERATION-QUALITY-PLAN.md` — Q1-Q6 숙의 품질 계획
+- `docs/facilitator-runbook.md` — 현장 운영 런북
+- `docs/privacy-template.md` — 개인정보 고지문 템플릿
+- `docs/transcript-architecture.md` — 전사 동의와 향후 ingest 아키텍처
 
-MIT © 2026 Son — [LICENSE](LICENSE)
+## 최근 검증
+
+- `npm run lint`
+- `npm run typecheck`
+- `npm test`
+- `DATABASE_URL=postgres://user:pass@localhost:5432/liveops AUTH_SECRET=build-secret-for-local-check npm run build`
+
+## 라이선스
+
+MIT

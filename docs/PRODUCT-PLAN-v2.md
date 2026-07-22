@@ -57,7 +57,7 @@ GTM 순서: **자가 사용(AIalive 세션) → 파일럿 3건(지인 퍼실리�
 - ✅ **전사 동의·보안 기반**: 고지문 "수집함+동의 절차" 개정, `recordingConsent` 서버 게이트, 전사 3종 테이블 스키마·RLS(오디오 경로 컬럼 부재), 녹음 배너. `a16f645`. ingest 파이프라인은 미착수 — `docs/transcript-architecture.md`
 - ✅ **4단계 판매 준비**: 결정론적 데모 시드(`scripts/seed-delib-demo.mjs`, `npm run seed:demo` — "동네 도서관 운영 시간" 시민 포럼 24명·4분임·3라운드·15의견, consensus/divisive/minority 결과판과 k-익명 억제·모더레이션이 실제로 드러남), 퍼실리테이터 런북(`docs/facilitator-runbook.md`), 프라이버시 고지문 템플릿·보관 정책(`docs/privacy-template.md`, `docs/data-retention-policy.md` — 수집 항목은 코드 기준으로 정확히, PIPA·미성년자 법정대리인 동의의 구체 법조문·의무는 `⚠️ 법무/개인정보 전문가 검토 필수` 경고+`[검토 필요]` 항목으로 남김). 수동 결제는 파일럿 견적·계좌 안내로 대체(§5). §11 잔여 MINOR 중 미성년자 동의 플로우 = 문서 골격+경고 반영 완료
 
-**현재 상태 (2026-07-22)**: MVP 0~4단계 + Post-MVP B + 전사 동의 기반 **전부 완료**. 숙의 품질 지원 Q1~Q4와 Q5 선행 게이트 리포트 집계까지 완료. 테스트 398 passed / 4 skipped, 네 차례 이중 적대 리뷰(코드+통계)와 Q1/Q2 보안 하드닝 통과. 로컬 `delib-mvp`는 `origin/delib-mvp`보다 앞서 있으며 push 는 아직 별도 수행 전.
+**현재 상태 (2026-07-22)**: MVP 0~4단계 + Post-MVP B + 전사 동의 기반 **전부 완료**. 숙의 품질 지원 Q1~Q4와 Q5 선행 게이트 리포트 집계까지 완료. 테스트 398 passed / 4 skipped, production build 통과(`DATABASE_URL`/`AUTH_SECRET` 주입), 네 차례 이중 적대 리뷰(코드+통계)와 Q1/Q2 보안 하드닝 통과. `delib-mvp`는 `origin/delib-mvp`에 push 완료(`faef3be`).
 
 ### 다음 개발 — 숙의 품질 지원 (조사 반영)
 

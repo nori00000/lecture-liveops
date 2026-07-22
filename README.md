@@ -1,58 +1,61 @@
-[English](README.md) | [한국어](README.ko.md)
+# Lecture LiveOps
 
-<div align="center">
+Lecture LiveOps is an operator console for live lectures and deliberative workshops.
 
-# lecture-liveops
+The current product focus is the deliberation workflow: participants enter by access key, submit statements, vote agree/disagree/pass, and facilitators publish traceable reports with consensus, divisive points, minority views, moderation logs, evidence-type distribution, and quality-gate metrics.
 
-![hero](assets/hero.png)
+## Current Status
 
-lecture-liveops — a project.
+- Deliberation MVP stages 0-4 are implemented.
+- Post-MVP opinion landscape statistics are implemented behind statistical gates.
+- Transcript consent and schema groundwork are implemented; transcript ingest is intentionally not implemented yet.
+- Deliberation quality support Q1-Q4 is implemented.
+- Q5 common-ground natural-language summaries are gated until pilot measurements show the prerequisite quality thresholds.
 
-![License](https://img.shields.io/badge/License-MIT-yellow.svg) ![Status](https://img.shields.io/badge/status-active-brightgreen.svg) ![Maintained](https://img.shields.io/badge/maintained-yes-success.svg) ![PRs](https://img.shields.io/badge/PRs-welcome-blueviolet.svg) ![Made%20with](https://img.shields.io/badge/made%20with-%E2%9D%A4-red.svg) ![Node](https://img.shields.io/badge/node-%3E%3D18-339933.svg) ![npm](https://img.shields.io/badge/npm-package-CB3837.svg) ![Conventional%20Commits](https://img.shields.io/badge/commits-conventional-FE5196.svg)
-
-</div>
-
----
-
-## 🌟 Highlights
-
-- ⚡ **lecture-liveops** — lecture-liveops — a project.
-- 🧩 type: `node` 프로젝트, 한 번에 셋업.
-- 🔒 안전 기본값 — 시크릿 누출 차단, private 문서 분리.
-- 📈 Conventional Commits + 자동 CHANGELOG + semver 릴리스.
-
-## 🚀 Quick Start
+## Setup
 
 ```bash
-git clone https://github.com/Son/lecture-liveops.git
-cd lecture-liveops
-make init        # 또는 프로젝트 진입점 실행
+npm install
+cp .env.example .env.local
+npm run dev
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](.github/SECURITY.md), and [SUPPORT.md](.github/SUPPORT.md) for project documentation.
+The default development path works in fixture mode without a database.
 
-## 📸 Gallery
+Production mode is fail-closed: `DATABASE_URL` must point to Neon/Postgres, and `AUTH_SECRET` must be set. A production build can be checked locally with environment variables present:
 
-| | | |
-|---|---|---|
-| ![g1](assets/gallery-1.png) | ![g2](assets/gallery-2.png) | ![g3](assets/gallery-3.png) |
-
-## 📊 Architecture
-
-```mermaid
-flowchart LR
-  A[Input] --> B[lecture-liveops core]
-  B --> C[Gates / QA]
-  C -->|pass| D[Output]
-  C -->|fail| B
+```bash
+DATABASE_URL=postgres://user:pass@localhost:5432/liveops AUTH_SECRET=local-build-secret npm run build
 ```
 
-![architecture](assets/architecture.png)
+## Scripts
 
-## 🤝 Contributing
+```bash
+npm run dev           # Next.js dev server on port 3010
+npm run lint          # ESLint
+npm run typecheck     # TypeScript
+npm test              # Vitest
+npm run build         # Production build, requires production env vars
+npm run seed:demo     # Deterministic deliberation demo seed
+```
 
-이슈와 PR을 환영합니다. [PULL_REQUEST_TEMPLATE](.github/PULL_REQUEST_TEMPLATE.md) 와 [SECURITY](.github/SECURITY.md) 를 확인하세요.
+## Key Docs
 
-## 📝 License
+- `docs/PRODUCT-PLAN-v2.md` — product plan and current roadmap
+- `docs/DELIBERATION-QUALITY-PLAN.md` — Q1-Q6 deliberation quality plan
+- `docs/facilitator-runbook.md` — field runbook
+- `docs/privacy-template.md` — privacy notice template
+- `docs/transcript-architecture.md` — transcript consent and future ingest architecture
 
-MIT © 2026 Son — [LICENSE](LICENSE)
+## Verification Snapshot
+
+Latest local verification:
+
+- `npm run lint`
+- `npm run typecheck`
+- `npm test`
+- `DATABASE_URL=postgres://user:pass@localhost:5432/liveops AUTH_SECRET=build-secret-for-local-check npm run build`
+
+## License
+
+MIT
