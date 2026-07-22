@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { sessions, delibRounds, delibGroups, participants, statements, votes, landscape, aiObservations } from '@/lib/db/repo'
 import { adminContext } from '@/lib/db/neonHelpers'
 import { toConsoleCard } from '@/lib/delib/views'
-import { computeEvidenceKindByRound } from '@/lib/delib/metrics'
+import { computeAppSubmissionDistributionByRound, computeEvidenceKindByRound } from '@/lib/delib/metrics'
 import { readRecordingConsent } from '@/lib/action/handlers/delib'
 
 // 퍼실리테이터 콘솔 데이터 — 그룹별 현황, moderation 큐, 투표 진행률.
@@ -78,6 +78,21 @@ export async function GET(req: Request) {
       }))
   )
 
+  // Q4: 앱 제출 분포 — "발언 균등도"가 아니라 앱/대리 입력으로 저장된 텍스트 제출 분포다.
+  // 개인별 제출 여부는 노출하지 않고 그룹 단위만 내려보낸다. 저자 미상 대리입력이 섞인 라운드는
+  // 조용한 참가자를 미제출자로 오분류할 수 있으므로 라운드 전체를 억제한다.
+  const appSubmissionByRound = computeAppSubmissionDistributionByRound(
+    allStatements
+      .filter((s) => s.moderation_state === 'visible')
+      .map((s) => ({
+        statementId: s.id,
+        roundId: s.round_id,
+        groupId: s.group_id,
+        authorParticipantId: s.author_participant_id
+      })),
+    groupViews.map((g) => ({ groupId: g.id, memberCount: g.members.length }))
+  )
+
   const activeRound = rounds.find((r) => r.status === 'active') ?? null
   const snaps = await landscape.list(ctx, sessionId)
 
@@ -123,6 +138,8 @@ export async function GET(req: Request) {
     voteProgress: { totalVotes, expectedVotes, ratio: voteProgress },
     // Q1 근거 유형 분포 (라운드별 · 그룹 단위, k-익명 억제 반영). 프로젝터에는 내려보내지 않는다.
     evidenceByRound,
+    // Q4 앱 제출 분포 (라운드별 · 그룹 단위, k-익명/대리입력 억제 반영). 프로젝터에는 내려보내지 않는다.
+    appSubmissionByRound,
     // 녹음·전사 동의 상태 — 콘솔 "녹음 중" 상시 배너 조건 (transcript-architecture §4).
     recording: readRecordingConsent(session.metadata),
     // Q2 검토 후보 (operator 전용 — 참가자 화면·프로젝터에는 어떤 경로로도 나가지 않는다).

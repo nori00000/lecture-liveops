@@ -357,6 +357,105 @@ export function computeEvidenceKindByRound(
   }))
 }
 
+// ============================================================
+// Q4 — 앱 제출 분포 (DELIBERATION-QUALITY-PLAN §2 Q4 / §5 지표)
+// "발언 균등도"가 아니다. 오프라인 구두 발언은 측정하지 않고, 앱/대리 입력으로 저장된
+// 텍스트 제출만 센다. 개인 단위는 표시하지 않는다.
+// ============================================================
+
+export type AppSubmissionItem = {
+  statementId: string
+  roundId?: string | null
+  groupId?: string | null
+  authorParticipantId?: string | null
+}
+
+export type AppSubmissionGroupInput = {
+  groupId: string
+  memberCount: number
+}
+
+export type AppSubmissionSuppressionReason = 'proxy_entry' | 'members' | 'submitters' | null
+
+export type AppSubmissionGroupDistribution = {
+  groupId: string
+  memberCount: number
+  statementCount: number
+  submittedParticipants: number
+  submissionRatio: number
+  suppressed: boolean
+  suppressionReason: AppSubmissionSuppressionReason
+}
+
+export type AppSubmissionRoundDistribution = {
+  roundId: string | null
+  suppressed: boolean
+  suppressionReason: AppSubmissionSuppressionReason
+  groups: AppSubmissionGroupDistribution[]
+}
+
+function emptySubmissionGroup(
+  groupId: string,
+  memberCount: number,
+  suppressed = false,
+  suppressionReason: AppSubmissionSuppressionReason = null
+): AppSubmissionGroupDistribution {
+  return { groupId, memberCount, statementCount: 0, submittedParticipants: 0, submissionRatio: 0, suppressed, suppressionReason }
+}
+
+function suppressSubmissionGroup(g: AppSubmissionGroupDistribution, reason: AppSubmissionSuppressionReason): AppSubmissionGroupDistribution {
+  return emptySubmissionGroup(g.groupId, g.memberCount, true, reason)
+}
+
+export function computeAppSubmissionDistributionByRound(
+  items: AppSubmissionItem[],
+  groups: AppSubmissionGroupInput[],
+  options: ComputeOptions = {}
+): AppSubmissionRoundDistribution[] {
+  const kThreshold = options.kAnonymityThreshold ?? DEFAULT_K_ANONYMITY
+  const groupInputs = groups.slice().sort((a, b) => a.groupId.localeCompare(b.groupId))
+  const byRound = new Map<string, AppSubmissionItem[]>()
+  const NULL_KEY = '__no_round__'
+  for (const it of items) {
+    const key = it.roundId ?? NULL_KEY
+    const arr = byRound.get(key) ?? []
+    arr.push(it)
+    byRound.set(key, arr)
+  }
+
+  return [...byRound.entries()].map(([key, roundItems]) => {
+    const hasUnknownAuthor = roundItems.some((it) => it.authorParticipantId == null)
+    const roundId = key === NULL_KEY ? null : key
+    if (hasUnknownAuthor) {
+      return {
+        roundId,
+        suppressed: true,
+        suppressionReason: 'proxy_entry',
+        groups: groupInputs.map((g) => emptySubmissionGroup(g.groupId, g.memberCount, true, 'proxy_entry'))
+      }
+    }
+
+    const groupsOut = groupInputs.map((g) => {
+      const groupItems = roundItems.filter((it) => it.groupId === g.groupId)
+      const submitters = new Set(groupItems.map((it) => it.authorParticipantId).filter((id): id is string => Boolean(id)))
+      const visible: AppSubmissionGroupDistribution = {
+        groupId: g.groupId,
+        memberCount: g.memberCount,
+        statementCount: groupItems.length,
+        submittedParticipants: submitters.size,
+        submissionRatio: g.memberCount > 0 ? submitters.size / g.memberCount : 0,
+        suppressed: false,
+        suppressionReason: null
+      }
+      if (g.memberCount > 0 && g.memberCount < kThreshold) return suppressSubmissionGroup(visible, 'members')
+      if (submitters.size > 0 && submitters.size < kThreshold) return suppressSubmissionGroup(visible, 'submitters')
+      return visible
+    })
+
+    return { roundId, suppressed: false, suppressionReason: null, groups: groupsOut }
+  })
+}
+
 // vote 값 배열 → Tally (테스트/집계 helper)
 export function tallyVotes(voteList: VoteValue[]): Tally {
   const t: Tally = { agree: 0, disagree: 0, pass: 0 }

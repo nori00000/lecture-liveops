@@ -7,10 +7,14 @@ import { swrFetcher } from '@/lib/api/fetcher'
 import { invoke } from '@/lib/util/envelope'
 import { Badge, Button, Card, CardHeader, Input, PageHeader, Select, Textarea } from '@/components/ui/primitives'
 import { VoteControls } from '@/components/delib/VoteControls'
-import { EvidenceKindControls } from '@/components/delib/EvidenceKindControls'
 import { RecordingBanner } from '@/components/delib/RecordingBanner'
-import type { VoteValue, EvidenceKind } from '@/lib/db/schema'
-import type { EvidenceKindRoundBreakdown, EvidenceKindDistribution } from '@/lib/delib/metrics'
+import type { VoteValue } from '@/lib/db/schema'
+import type {
+  AppSubmissionGroupDistribution,
+  AppSubmissionRoundDistribution,
+  EvidenceKindRoundBreakdown,
+  EvidenceKindDistribution
+} from '@/lib/delib/metrics'
 
 type Member = { participantId: string; alias: string }
 type GroupView = { id: string; label: string; topic: string; members: Member[] }
@@ -40,6 +44,8 @@ type ConsoleData = {
   snapshots?: { id: string; roundId: string | null; computedAt: string; publishedAt: string | null }[]
   // Q1 근거 유형 분포 — 서버에서 k-익명 억제까지 마친 집계값 (개별 발언 태그는 내려오지 않는다).
   evidenceByRound?: EvidenceKindRoundBreakdown[]
+  // Q4 앱 제출 분포 — 서버에서 k-익명/대리입력 억제까지 마친 그룹 단위 집계값.
+  appSubmissionByRound?: AppSubmissionRoundDistribution[]
   recording?: { active: boolean; consentAt: string | null; offsiteProcessing: boolean }
   // Q2 검토 후보 — 콘솔 전용. 참가자 화면·프로젝터에는 절대 내려오지 않는다.
   aiObservations?: AiObservationView
@@ -149,6 +155,9 @@ export default function WorkshopConsolePage({ params }: { params: Promise<{ id: 
 
       {/* Q1 근거 유형 분포 (라운드별 · 그룹 단위) */}
       <EvidencePanel breakdowns={data?.evidenceByRound ?? []} rounds={data?.rounds ?? []} groups={data?.groups ?? []} />
+
+      {/* Q4 앱 제출 분포 (라운드별 · 그룹 단위) */}
+      <AppSubmissionPanel breakdowns={data?.appSubmissionByRound ?? []} rounds={data?.rounds ?? []} groups={data?.groups ?? []} />
 
       {/* 그룹 보드 (좌석맵 재해석 — 그룹별 멤버 카드) */}
       <GroupBoard groups={data?.groups ?? []} />
@@ -454,9 +463,16 @@ const EVIDENCE_LABELS: Array<{ key: 'experience' | 'source' | 'estimate' | 'unsp
 
 function EvidenceBars({ dist }: { dist: EvidenceKindDistribution }) {
   if (dist.suppressed) {
+    const reason = dist.suppressionReason === 'small_cell'
+      ? '작은 셀'
+      : dist.suppressionReason === 'group_residual'
+        ? '그룹 잔차'
+        : dist.suppressionReason === 'complementary'
+          ? '보완 억제'
+          : '표본 부족'
     return (
       <p className="text-xs text-textMute">
-        표본 부족(기여자 {dist.contributors}명 &lt; 3) — 개인 태깅 역추론 방지를 위해 분포를 표시하지 않습니다.
+        {reason}(기여자 {dist.contributors}명) — 개인 태깅 역추론 방지를 위해 분포를 표시하지 않습니다.
       </p>
     )
   }
@@ -534,6 +550,86 @@ function EvidencePanel({
         )}
       </div>
     </Card>
+  )
+}
+
+function AppSubmissionPanel({
+  breakdowns,
+  rounds,
+  groups
+}: {
+  breakdowns: AppSubmissionRoundDistribution[]
+  rounds: Round[]
+  groups: GroupView[]
+}) {
+  const roundLabel = (roundId: string | null) => {
+    if (roundId == null) return '라운드 미지정'
+    const r = rounds.find((x) => x.id === roundId)
+    return r ? `라운드 ${r.round_index} — ${r.title || '(제목 없음)'}` : `라운드 (${roundId})`
+  }
+  const groupLabel = (groupId: string) => groups.find((g) => g.id === groupId)?.label ?? groupId
+
+  return (
+    <Card>
+      <CardHeader title="앱 제출 분포" hint="텍스트 제출 기준 · 그룹 단위" />
+      <div className="p-4 space-y-4">
+        <p className="text-xs text-textMute">
+          앱 또는 운영자 대리 입력으로 저장된 텍스트 제출만 셉니다. 구두 발언은 측정되지 않습니다.
+          개인별 제출 여부는 표시하지 않으며, 저자 미상 대리입력이 있는 라운드는 분포를 표시하지 않습니다.
+        </p>
+        {breakdowns.length === 0 ? (
+          <p className="text-sm text-textDim">아직 집계할 제출이 없습니다.</p>
+        ) : (
+          breakdowns.map((b) => (
+            <div key={b.roundId ?? '(none)'} className="rounded-md border border-border bg-bg p-3 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-text">{roundLabel(b.roundId)}</span>
+                {b.suppressed ? <Badge tone="warn">대리입력 억제</Badge> : <Badge tone="neutral">{b.groups.length}개 그룹</Badge>}
+              </div>
+              {b.suppressed ? (
+                <p className="text-xs text-textMute">
+                  저자 미상 대리입력이 섞여 조용한 참가자를 미제출자로 오분류할 수 있어 라운드 전체 분포를 표시하지 않습니다.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {b.groups.map((g) => (
+                    <AppSubmissionGroupBars key={g.groupId} group={g} label={groupLabel(g.groupId)} />
+                  ))}
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function AppSubmissionGroupBars({ group, label }: { group: AppSubmissionGroupDistribution; label: string }) {
+  if (group.suppressed) {
+    const reason = group.suppressionReason === 'members' ? '그룹 인원 부족' : group.suppressionReason === 'submitters' ? '제출자 표본 부족' : '대리입력 억제'
+    return (
+      <div className="rounded border border-border p-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs text-text">{label}</span>
+          <Badge tone="warn">{reason}</Badge>
+        </div>
+        <p className="mt-2 text-xs text-textMute">개인 제출 여부 역추론 방지를 위해 수치를 표시하지 않습니다.</p>
+      </div>
+    )
+  }
+  const ratioPct = Math.round(group.submissionRatio * 100)
+  return (
+    <div className="rounded border border-border p-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-text">{label}</span>
+        <span className="text-[11px] text-textDim">{group.submittedParticipants}/{group.memberCount}명 · 제출 {group.statementCount}건</span>
+      </div>
+      <div className="mt-2 h-2 w-full rounded-full bg-surfaceAlt overflow-hidden" aria-label={`${label} 앱 제출 분포`}>
+        <div className="h-full bg-info transition-all" style={{ width: `${ratioPct}%` }} />
+      </div>
+      <div className="mt-1 text-[11px] text-textDim text-right">{ratioPct}%</div>
+    </div>
   )
 }
 
@@ -670,8 +766,6 @@ function ProxyInput({
 }) {
   const [participantId, setParticipantId] = useState('')
   const [body, setBody] = useState('')
-  // Q1: 대리입력에서도 근거 유형을 고를 수 있다 — 단 강제하지 않는다(종이 제출에 표기가 없을 수 있다).
-  const [evidenceKind, setEvidenceKind] = useState<EvidenceKind | null>(null)
 
   return (
     <Card>
@@ -691,10 +785,9 @@ function ProxyInput({
         <div className="space-y-2">
           <label htmlFor="proxy-statement" className="block text-xs text-textDim">의견 대리 제출</label>
           <Textarea id="proxy-statement" rows={2} value={body} onChange={(e) => setBody(e.target.value)} placeholder="종이에 적힌 의견을 입력" disabled={busy} />
-          <div>
-            <div className="text-xs text-textDim mb-1">이 주장의 근거 <span className="text-textMute">(선택사항)</span></div>
-            <EvidenceKindControls idBase="proxy-evidence-kind" value={evidenceKind} onChange={setEvidenceKind} disabled={busy} />
-          </div>
+          <p className="text-xs text-textMute">
+            대리입력은 참가자 본인의 근거 유형 선택으로 볼 수 없어 근거 분포 집계에는 미지정으로 처리됩니다.
+          </p>
           <div className="flex justify-end">
             <Button
               size="sm"
@@ -706,13 +799,9 @@ function ProxyInput({
                   roundId: activeRoundId ?? undefined,
                   authorParticipantId: participantId,
                   body: body.trim(),
-                  visibility: 'group',
-                  evidenceKind: evidenceKind ?? undefined
+                  visibility: 'group'
                 })
-                if (ok) {
-                  setBody('')
-                  setEvidenceKind(null)
-                }
+                if (ok) setBody('')
               }}
             >
               대리 제출

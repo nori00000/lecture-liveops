@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeSnapshotPayload, tallyVotes, type Tally } from '@/lib/delib/metrics';
+import { computeAppSubmissionDistributionByRound, computeSnapshotPayload, tallyVotes, type Tally } from '@/lib/delib/metrics';
 
 describe('delib metrics — 스냅샷 지표', () => {
   it('tallyVotes — 찬반유보 집계', () => {
@@ -125,5 +125,54 @@ describe('delib metrics — 스냅샷 지표', () => {
     const p = computeSnapshotPayload([{ id: 's1', group_id: 'g1' }, { id: 's2', group_id: 'g1' }, { id: 's3', group_id: 'g2' }], tallies);
     expect(p.overall.leaning).toBe('agree');
     expect(p.minority.map((m) => m.statementId)).not.toContain('s3');
+  });
+});
+
+describe('delib metrics — Q4 앱 제출 분포', () => {
+  const groups = [
+    { groupId: 'g1', memberCount: 4 },
+    { groupId: 'g2', memberCount: 4 }
+  ];
+
+  it('라운드별 그룹 제출자 수와 제출 건수를 계산한다', () => {
+    const out = computeAppSubmissionDistributionByRound([
+      { statementId: 's1', roundId: 'r1', groupId: 'g1', authorParticipantId: 'p1' },
+      { statementId: 's2', roundId: 'r1', groupId: 'g1', authorParticipantId: 'p2' },
+      { statementId: 's3', roundId: 'r1', groupId: 'g1', authorParticipantId: 'p3' },
+      { statementId: 's4', roundId: 'r1', groupId: 'g1', authorParticipantId: 'p1' },
+      { statementId: 's5', roundId: 'r1', groupId: 'g2', authorParticipantId: 'p5' },
+      { statementId: 's6', roundId: 'r1', groupId: 'g2', authorParticipantId: 'p6' },
+      { statementId: 's7', roundId: 'r1', groupId: 'g2', authorParticipantId: 'p7' }
+    ], groups);
+    const r1 = out[0];
+    expect(r1.suppressed).toBe(false);
+    const g1 = r1.groups.find((g) => g.groupId === 'g1')!;
+    expect(g1.statementCount).toBe(4);
+    expect(g1.submittedParticipants).toBe(3);
+    expect(g1.submissionRatio).toBeCloseTo(0.75);
+  });
+
+  it('저자 미상 대리입력이 있는 라운드는 전체 분포를 억제한다', () => {
+    const out = computeAppSubmissionDistributionByRound([
+      { statementId: 's1', roundId: 'r1', groupId: 'g1', authorParticipantId: 'p1' },
+      { statementId: 's2', roundId: 'r1', groupId: 'g1', authorParticipantId: null }
+    ], groups);
+    expect(out[0].suppressed).toBe(true);
+    expect(out[0].suppressionReason).toBe('proxy_entry');
+    expect(out[0].groups.every((g) => g.suppressed && g.suppressionReason === 'proxy_entry')).toBe(true);
+  });
+
+  it('그룹 인원 또는 제출자 수가 k 미만이면 해당 그룹 수치를 억제한다', () => {
+    const out = computeAppSubmissionDistributionByRound([
+      { statementId: 's1', roundId: 'r1', groupId: 'tiny', authorParticipantId: 'p1' },
+      { statementId: 's2', roundId: 'r1', groupId: 'g1', authorParticipantId: 'p2' },
+      { statementId: 's3', roundId: 'r1', groupId: 'g1', authorParticipantId: 'p3' },
+      { statementId: 's4', roundId: 'r1', groupId: 'g2', authorParticipantId: 'p5' },
+      { statementId: 's5', roundId: 'r1', groupId: 'g2', authorParticipantId: 'p6' },
+      { statementId: 's6', roundId: 'r1', groupId: 'g2', authorParticipantId: 'p7' }
+    ], [{ groupId: 'tiny', memberCount: 2 }, ...groups]);
+    expect(out[0].groups.find((g) => g.groupId === 'tiny')?.suppressionReason).toBe('members');
+    expect(out[0].groups.find((g) => g.groupId === 'g1')?.suppressionReason).toBe('submitters');
+    expect(out[0].groups.find((g) => g.groupId === 'g2')?.suppressed).toBe(false);
   });
 });
