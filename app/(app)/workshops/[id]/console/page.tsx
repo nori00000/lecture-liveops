@@ -62,12 +62,38 @@ type AiObservationCandidate = {
 }
 type AiObservationView = { pending: AiObservationCandidate[]; approvedCount: number; rejectedCount: number }
 
+type TranscriptLensData = {
+  ok: boolean
+  error?: string
+  mode?: 'transcript' | 'statement_preview'
+  modeLabel?: string
+  activeRound?: { id: string; roundIndex: number; title: string } | null
+  recording?: { active: boolean; consentAt: string | null; offsiteProcessing: boolean }
+  coverage?: { sourceCount: number; segmentCount: number; visibleSegmentCount: number; lastUpdatedAt: string | null }
+  segments?: Array<{
+    id: string
+    sourceId: string
+    groupId: string | null
+    roundId: string | null
+    speakerTag: string
+    startedMs: number
+    endedMs: number
+    text: string
+    confidence: number | null
+    createdAt: string
+  }>
+  keywords?: Array<{ term: string; count: number; weight: number }>
+  groupActivity?: Array<{ groupId: string; label: string; segmentCount: number; textLength: number; share: number }>
+  pulse?: { questions: number; agreements: number; disagreements: number; concerns: number }
+}
+
 // 콘솔 폴링 2~5초 (§3). 운영 조작 후엔 mutate()로 즉시 반영.
 const POLL_MS = 3000
 
 export default function WorkshopConsolePage({ params }: { params: Promise<{ id: string }> }) {
   const { id: sessionId } = use(params)
   const { data, mutate } = useSWR<ConsoleData>(`/api/data/delib/console-view?sessionId=${encodeURIComponent(sessionId)}`, swrFetcher, { refreshInterval: POLL_MS })
+  const { data: transcriptLens } = useSWR<TranscriptLensData>(`/api/data/delib/transcript-view?sessionId=${encodeURIComponent(sessionId)}`, swrFetcher, { refreshInterval: POLL_MS })
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -125,6 +151,8 @@ export default function WorkshopConsolePage({ params }: { params: Promise<{ id: 
       <RecordingBanner active={data?.recording?.active === true} audience="operator" />
 
       {error ? <div role="alert" className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div> : null}
+
+      <TranscriptLensPanel data={transcriptLens} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <RoundControl sessionId={sessionId} rounds={data?.rounds ?? []} activeRound={data?.activeRound ?? null} busy={busy} onStart={(input) => run('delib.start_round', input)} />
@@ -347,6 +375,131 @@ function ReportDownload({ sessionId }: { sessionId: string }) {
       </div>
     </Card>
   )
+}
+
+function TranscriptLensPanel({ data }: { data: TranscriptLensData | undefined }) {
+  const mode = data?.mode ?? 'statement_preview'
+  const segments = data?.segments ?? []
+  const keywords = data?.keywords ?? []
+  const groupActivity = data?.groupActivity ?? []
+  const pulse = data?.pulse ?? { questions: 0, agreements: 0, disagreements: 0, concerns: 0 }
+  const coverage = data?.coverage
+  const lastUpdated = coverage?.lastUpdatedAt ? new Date(coverage.lastUpdatedAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '대기'
+
+  return (
+    <Card>
+      <CardHeader
+        title="라이브 전사 렌즈"
+        hint={mode === 'transcript' ? `소스 ${coverage?.sourceCount ?? 0}개 · 전사 ${coverage?.segmentCount ?? 0}개` : `전사 미연결 · 제출 발언 ${coverage?.segmentCount ?? 0}개`}
+      />
+      <div className="p-4 space-y-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={mode === 'transcript' ? 'accent' : 'warn'}>{data?.modeLabel ?? '전사 미연결 프리뷰'}</Badge>
+          <Badge tone={data?.recording?.active ? 'info' : 'neutral'}>{data?.recording?.active ? '녹음 동의 ON' : '녹음 동의 OFF'}</Badge>
+          {data?.activeRound ? <Badge tone="neutral">라운드 {data.activeRound.roundIndex}</Badge> : <Badge tone="neutral">라운드 없음</Badge>}
+          <span className="text-[11px] text-textMute">업데이트 {lastUpdated}</span>
+        </div>
+
+        {mode === 'statement_preview' ? (
+          <div className="rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-textDim">
+            실제 음성 전사 수집이 연결되기 전이라, 현재 화면은 참가자 제출 발언을 전사 흐름처럼 시각화한 프리뷰입니다.
+          </div>
+        ) : null}
+
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.3fr)_minmax(320px,0.7fr)] gap-4">
+          <div className="rounded-md border border-border bg-bg">
+            <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+              <span className="text-xs font-medium text-text">최근 전사 흐름</span>
+              <span className="text-[11px] text-textMute">{coverage?.visibleSegmentCount ?? segments.length}개 표시</span>
+            </div>
+            <ol className="divide-y divide-border max-h-[360px] overflow-auto">
+              {segments.length === 0 ? (
+                <li className="px-3 py-8 text-sm text-textDim text-center">표시할 전사 또는 제출 발언이 없습니다.</li>
+              ) : (
+                segments.slice().reverse().map((s) => (
+                  <li key={s.id} className="px-3 py-2 grid grid-cols-[72px_minmax(0,1fr)] gap-3">
+                    <div className="text-[11px] text-textMute tabular-nums">
+                      <div>{formatMs(s.startedMs)}</div>
+                      <div className="truncate text-textDim">{s.speakerTag || 'speaker'}</div>
+                    </div>
+                    <p className="text-sm text-text break-words leading-relaxed">{s.text}</p>
+                  </li>
+                ))
+              )}
+            </ol>
+          </div>
+
+          <div className="space-y-3">
+            <div className="rounded-md border border-border bg-bg p-3">
+              <div className="text-xs font-medium text-text mb-2">대화 신호</div>
+              <div className="grid grid-cols-2 gap-2">
+                <SignalTile label="질문" value={pulse.questions} toneClass="bg-info" />
+                <SignalTile label="동의" value={pulse.agreements} toneClass="bg-accent" />
+                <SignalTile label="반대" value={pulse.disagreements} toneClass="bg-danger" />
+                <SignalTile label="우려" value={pulse.concerns} toneClass="bg-warn" />
+              </div>
+            </div>
+
+            <div className="rounded-md border border-border bg-bg p-3">
+              <div className="text-xs font-medium text-text mb-2">키워드</div>
+              {keywords.length === 0 ? (
+                <p className="text-xs text-textMute">아직 키워드가 없습니다.</p>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {keywords.map((k) => (
+                    <span key={k.term} className="inline-flex items-center gap-1 rounded border border-border bg-surfaceAlt px-2 py-1 text-xs text-textDim">
+                      <span>{k.term}</span>
+                      <span className="text-[10px] text-textMute">{k.count}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-md border border-border bg-bg p-3">
+              <div className="text-xs font-medium text-text mb-2">그룹 발화량</div>
+              <ul className="space-y-2">
+                {groupActivity.length === 0 ? <li className="text-xs text-textMute">그룹 정보가 없습니다.</li> : null}
+                {groupActivity.map((g) => {
+                  const pct = Math.round(g.share * 100)
+                  return (
+                    <li key={g.groupId} className="space-y-1">
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="text-text truncate">{g.label}</span>
+                        <span className="text-textDim tabular-nums">{g.segmentCount}개 · {pct}%</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-surfaceAlt overflow-hidden">
+                        <div className="h-full bg-info transition-all" style={{ width: `${pct}%` }} />
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+function SignalTile({ label, value, toneClass }: { label: string; value: number; toneClass: string }) {
+  return (
+    <div className="rounded border border-border bg-surfaceAlt px-2 py-2 min-h-[56px]">
+      <div className="flex items-center gap-1.5">
+        <span className={`h-2 w-2 rounded-full ${toneClass}`} />
+        <span className="text-[11px] text-textDim">{label}</span>
+      </div>
+      <div className="mt-1 text-lg font-semibold text-text tabular-nums">{value}</div>
+    </div>
+  )
+}
+
+function formatMs(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
 }
 
 // ── Q2 검토 후보 패널 (DELIBERATION-QUALITY-PLAN §2 Q2)

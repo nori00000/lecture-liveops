@@ -470,6 +470,45 @@ export const RoundAiObservationSchema = z.object({
   created_at: ts
 })
 
+export const TranscriptInsightKindEnum = z.enum(['argument', 'question', 'agreement', 'disagreement', 'other'])
+export const TranscriptInsightStatusEnum = z.enum(['pending', 'approved', 'rejected'])
+
+export const TranscriptSourceSchema = z.object({
+  id,
+  session_id: id,
+  group_id: z.string().nullable().default(null),
+  device_label: z.string().default(''),
+  started_at: ts,
+  ended_at: z.string().nullable().default(null),
+  consent_confirmed_at: z.string().nullable().default(null),
+  created_at: ts
+})
+
+export const TranscriptSegmentSchema = z.object({
+  id,
+  source_id: id,
+  round_id: z.string().nullable().default(null),
+  speaker_tag: z.string().default(''),
+  started_ms: z.number().int().nonnegative().default(0),
+  ended_ms: z.number().int().nonnegative().default(0),
+  text: z.string(),
+  confidence: z.number().nullable().default(null),
+  created_at: ts
+})
+
+export const TranscriptInsightSchema = z.object({
+  id,
+  session_id: id,
+  round_id: z.string().nullable().default(null),
+  group_id: z.string().nullable().default(null),
+  body: z.string(),
+  kind: TranscriptInsightKindEnum.default('other'),
+  evidence_segment_ids: z.array(z.string()).default([]),
+  status: TranscriptInsightStatusEnum.default('pending'),
+  promoted_statement_id: z.string().nullable().default(null),
+  created_at: ts
+})
+
 export const ActionLedgerSchema = z.object({
   id,
   session_id: z.string().nullable().default(null),
@@ -508,6 +547,9 @@ export type LiveObservation = z.infer<typeof LiveObservationSchema>
 export type SituationSnapshotRow = z.infer<typeof SituationSnapshotSchema>
 export type MaterialVersionRow = z.infer<typeof MaterialVersionSchema>
 export type ActionLedger = z.infer<typeof ActionLedgerSchema>
+export type TranscriptSource = z.infer<typeof TranscriptSourceSchema>
+export type TranscriptSegment = z.infer<typeof TranscriptSegmentSchema>
+export type TranscriptInsight = z.infer<typeof TranscriptInsightSchema>
 
 export type Participant = z.infer<typeof ParticipantSchema>
 export type WorkshopGroup = z.infer<typeof WorkshopGroupSchema>
@@ -527,6 +569,8 @@ export type EvidenceKind = z.infer<typeof EvidenceKindEnum>
 export type RoundAiObservation = z.infer<typeof RoundAiObservationSchema>
 export type AiObservationKind = z.infer<typeof AiObservationKindEnum>
 export type AiObservationStatus = z.infer<typeof AiObservationStatusEnum>
+export type TranscriptInsightKind = z.infer<typeof TranscriptInsightKindEnum>
+export type TranscriptInsightStatus = z.infer<typeof TranscriptInsightStatusEnum>
 
 export type Role = z.infer<typeof RoleEnum>
 export type ModerationActorRole = z.infer<typeof ModerationActorRoleEnum>

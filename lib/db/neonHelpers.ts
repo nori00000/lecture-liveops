@@ -138,7 +138,10 @@ export const COLS = {
   moderation_events: 'id, statement_id, actor_role, action, reason, created_at',
   // Q2 검토 후보 (0019). 컬럼 순서 = insert 값 순서.
   round_ai_observations:
-    'id, session_id, round_id, statement_id, kind, body, suggested_question, status, reviewed_by, reviewed_at, review_reason, provider, created_at'
+    'id, session_id, round_id, statement_id, kind, body, suggested_question, status, reviewed_by, reviewed_at, review_reason, provider, created_at',
+  transcript_sources: 'id, session_id, group_id, device_label, started_at, ended_at, consent_confirmed_at, created_at',
+  transcript_segments: 'id, source_id, round_id, speaker_tag, started_ms, ended_ms, text, confidence, created_at',
+  transcript_insights: 'id, session_id, round_id, group_id, body, kind, evidence_segment_ids, status, promoted_statement_id, created_at'
 } as const
 
 export function isoOrString(v: unknown): string {

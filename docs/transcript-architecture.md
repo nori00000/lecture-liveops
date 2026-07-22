@@ -12,7 +12,8 @@
 - `docs/data-retention-policy.md` §2-1/§2-2 — 전사 텍스트 7일, 원음성 현장 기기 24h 자동 삭제 + 삭제 증빙 로그
 - `privacy_settings.recordingConsent` / `recordingConsentAt` / `offsiteProcessing`(기본 false) + 서버 게이트 `enforceRecordingConsent()`
 - 참가자 화면·콘솔 "녹음 중" 상시 배너, 워크숍 설정의 녹음 동의 토글·고지 문구
-- `db/migrations/0017_transcript_consent.sql` — 전사 3종 테이블 **스키마·RLS만** (오디오 경로 컬럼 없음). 아직 어떤 코드도 이 테이블을 쓰지 않는다
+- `db/migrations/0017_transcript_consent.sql` — 전사 3종 테이블 **스키마·RLS** (오디오 경로 컬럼 없음)
+- 운영자 콘솔 `라이브 전사 렌즈` — `transcript_segments`가 있으면 전사 흐름을 읽어 키워드·그룹 발화량·질문/동의/반대/우려 신호를 시각화한다. 아직 ingest가 없을 때는 제출 발언 기반 `전사 미연결 프리뷰`로 명확히 표시한다
 
 아직 막혀 있는 것 (§7 잔여 게이트):
 1. `PRODUCT-PLAN-v2.md` §9가 전사 레이어를 **"유료 2~3건 이후"**로 명시 — **유효**
@@ -56,7 +57,7 @@
 
 ## 3. 실시간성 — 신규 인프라 0
 
-기존 폴링 축을 그대로 쓴다(콘솔 3초·프로젝터 4초·참가자 12초). 전사 박스가 5~15초 배치로 Neon upsert → 신규 `/api/data/delib/transcript-view`(operator 전용, `/api/data` 하위라 미들웨어 게이트 자동 적용) → 콘솔 SWR 폴링. 커서 기반 증분(`?since=`)만 지키면 페이로드 선형 증가 없음. **SSE·WebSocket·외부 릴레이 불필요** — 체감 지연은 폴링이 아니라 WhisperLive 자체 지연이 지배한다.
+기존 폴링 축을 그대로 쓴다(콘솔 3초·프로젝터 4초·참가자 12초). 전사 박스가 5~15초 배치로 Neon upsert → `/api/data/delib/transcript-view`(operator 전용, `/api/data` 하위라 미들웨어 게이트 자동 적용) → 콘솔 `라이브 전사 렌즈` SWR 폴링. 현재 route는 read-only이며, 실제 전사 segment가 없으면 제출 발언을 프리뷰로 변환한다. 커서 기반 증분(`?since=`)은 ingest 착수 시 추가한다. **SSE·WebSocket·외부 릴레이 불필요** — 체감 지연은 폴링이 아니라 WhisperLive 자체 지연이 지배한다.
 
 ## 4. 프라이버시를 문서가 아니라 구조로 강제
 
@@ -83,7 +84,7 @@
 
 ## 7. 착수 게이트 (ingest 파이프라인 착수 조건 — 아래 전부 충족 전 ingest 코드 금지)
 
-상태 갱신 2026-07-22. 동의·보안 기반(§0)은 이 게이트와 무관하게 선행 완료 — 게이트가 지키는 대상은 **전사 ingest·WhisperLive 연동·현장 박스**다.
+상태 갱신 2026-07-22. 동의·보안 기반(§0)과 운영자 콘솔의 read-only 전사 렌즈는 선행 완료 — 게이트가 지키는 대상은 **전사 ingest·WhisperLive 연동·현장 박스**다.
 
 1. ⏳ 유료 파일럿 **2건 이상** 완료 (기획서 §9 "유료 2~3건 이후")
 2. ⏳ 그 파일럿에서 고객이 **전사·요약을 실제로 요구**했다는 근거(요청 기록·추가 지불의사)

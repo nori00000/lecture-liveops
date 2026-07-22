@@ -28,7 +28,10 @@ import type {
   StatementVote,
   LandscapeSnapshot,
   ModerationEvent,
-  RoundAiObservation
+  RoundAiObservation,
+  TranscriptSource,
+  TranscriptSegment,
+  TranscriptInsight
 } from '../schema'
 
 import {
@@ -84,6 +87,9 @@ type Store = {
   moderation_events: ModerationEvent[]
   // Q2 검토 후보 (DELIBERATION-QUALITY-PLAN §2 Q2) — operator 전용.
   round_ai_observations: RoundAiObservation[]
+  transcript_sources: TranscriptSource[]
+  transcript_segments: TranscriptSegment[]
+  transcript_insights: TranscriptInsight[]
   revision: number
 }
 
@@ -123,6 +129,9 @@ function initStore(): Store {
     landscape_snapshots: [],
     moderation_events: [],
     round_ai_observations: [],
+    transcript_sources: [],
+    transcript_segments: [],
+    transcript_insights: [],
     revision: 1
   }
 }
