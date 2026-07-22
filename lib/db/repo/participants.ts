@@ -35,6 +35,14 @@ export const participants = {
     }
     return getStore().participants.find((p) => p.id === id)
   },
+  // access_key 당 participant 1개 (C-B). /p/enter 가 재입장 시 기존 row 를 재사용하기 위해 사용.
+  async findByAccessKeyId(ctx: RlsContext, accessKeyId: string): Promise<Participant | undefined> {
+    if (isNeonEnabled()) {
+      const r = await queryOne(ctx, `select ${COLS.participants} from participants where access_key_id = $1`, [accessKeyId])
+      return r ? toParticipant(r) : undefined
+    }
+    return getStore().participants.find((p) => p.access_key_id === accessKeyId)
+  },
   async register(
     ctx: RlsContext,
     input: Omit<Participant, 'id' | 'created_at'> & Partial<Pick<Participant, 'id'>>
@@ -51,6 +59,10 @@ export const participants = {
       await query(ctx, `insert into participants (${COLS.participants}) values ($1,$2,$3,$4,$5,$6)`,
         [row.id, row.session_id, row.display_alias, row.anon_handle, row.access_key_id, row.created_at])
       return row
+    }
+    // fixture 도 partial unique index(access_key_id) 를 흉내내 동일 에러를 던진다 (C-B / 이원화 일치).
+    if (row.access_key_id != null && getStore().participants.some((p) => p.access_key_id === row.access_key_id)) {
+      throw new Error('duplicate key value violates unique constraint "participants_access_key_unique"')
     }
     getStore().participants = [...getStore().participants, row]
     bumpRevision()

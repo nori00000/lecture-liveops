@@ -1,6 +1,7 @@
 /**
  * 숙의 도메인 action handler 단위 테스트 (fixture mode).
  * happy path + 중복투표 방지 + moderation 상태 전이.
+ * 보안 하드닝 후: participant 신원은 trusted(쿠키) 경로로만 주입, register 는 operator 전용.
  * AX_MODE 강제 fixture (DATABASE_URL 무시).
  */
 
@@ -43,13 +44,15 @@ function env(action: string, role: 'admin' | 'instructor' | 'assistant' | 'parti
   };
 }
 
+// register 는 이제 operator 전용 — instructor 로 생성.
 async function newParticipant(alias = 'p'): Promise<string> {
-  const r = await registerParticipant({ envelope: env('delib.register_participant', 'participant', { sessionId: SID, displayAlias: alias }) });
+  const r = await registerParticipant({ envelope: env('delib.register_participant', 'instructor', { sessionId: SID, displayAlias: alias }) });
   return (r.data as { participantId: string }).participantId;
 }
 
+// operator 가 대리 제출한 발언 (author 없이도 가능).
 async function newStatement(): Promise<string> {
-  const r = await submitStatement({ envelope: env('delib.submit_statement', 'participant', { sessionId: SID, body: '테스트 의견' }) });
+  const r = await submitStatement({ envelope: env('delib.submit_statement', 'instructor', { sessionId: SID, body: '테스트 의견' }) });
   return (r.data as { statementId: string }).statementId;
 }
 
@@ -91,16 +94,22 @@ describe('delib action handlers (fixture mode)', () => {
     expect((r.data as { status: string }).status).toBe('active');
   });
 
-  it('submitStatement — 발언 제출', async () => {
+  it('submitStatement — operator 대리 발언 제출', async () => {
     const sid = await newStatement();
     expect(sid).toMatch(/^st-/);
+  });
+
+  it('submitStatement — participant 는 trusted 쿠키 신원으로 저작', async () => {
+    const pid = await newParticipant();
+    const r = await submitStatement({ envelope: env('delib.submit_statement', 'participant', { sessionId: SID, body: '참가자 의견' }), trusted: { participantId: pid } });
+    expect((r.data as { statementId: string }).statementId).toMatch(/^st-/);
   });
 
   it('voteStatement — 중복투표 방지 (upsert 로 변경, row 1개 유지)', async () => {
     const stId = await newStatement();
     const pid = await newParticipant();
-    await voteStatement({ envelope: env('delib.vote_statement', 'participant', { statementId: stId, participantId: pid, vote: 'agree' }) });
-    const second = await voteStatement({ envelope: env('delib.vote_statement', 'participant', { statementId: stId, participantId: pid, vote: 'disagree' }) });
+    await voteStatement({ envelope: env('delib.vote_statement', 'participant', { statementId: stId, vote: 'agree' }), trusted: { participantId: pid } });
+    const second = await voteStatement({ envelope: env('delib.vote_statement', 'participant', { statementId: stId, vote: 'disagree' }), trusted: { participantId: pid } });
     expect((second.data as { vote: string }).vote).toBe('disagree');
     // unique(statement_id, participant_id): 같은 참가자 표는 1개만 존재, 최종값 disagree
     const rows = await votes.listByStatement(adminContext(SID), stId);
@@ -128,13 +137,25 @@ describe('delib action handlers (fixture mode)', () => {
     const stId = await newStatement();
     const p1 = await newParticipant('p1');
     const p2 = await newParticipant('p2');
-    await voteStatement({ envelope: env('delib.vote_statement', 'participant', { statementId: stId, participantId: p1, vote: 'agree' }) });
-    await voteStatement({ envelope: env('delib.vote_statement', 'participant', { statementId: stId, participantId: p2, vote: 'disagree' }) });
+    const p3 = await newParticipant('p3');
+    await voteStatement({ envelope: env('delib.vote_statement', 'participant', { statementId: stId, vote: 'agree' }), trusted: { participantId: p1 } });
+    await voteStatement({ envelope: env('delib.vote_statement', 'participant', { statementId: stId, vote: 'disagree' }), trusted: { participantId: p2 } });
+    await voteStatement({ envelope: env('delib.vote_statement', 'participant', { statementId: stId, vote: 'agree' }), trusted: { participantId: p3 } });
     const snap = await computeSnapshot({ envelope: env('delib.compute_snapshot', 'instructor', { sessionId: SID }) });
     const snapId = (snap.data as { snapshotId: string }).snapshotId;
     expect(snapId).toMatch(/^ls-/);
     expect((snap.data as { statementCount: number }).statementCount).toBe(1);
     const pub = await publishSnapshot({ envelope: env('delib.publish_snapshot', 'instructor', { snapshotId: snapId }) });
     expect((pub.data as { publishedAt: string | null }).publishedAt).toBeTruthy();
+  });
+
+  it('computeSnapshot — hidden 발언은 집계에서 제외 (M-1)', async () => {
+    const visible = await newStatement();
+    const hidden = await newStatement();
+    await moderateStatement({ envelope: env('delib.moderate_statement', 'instructor', { statementId: hidden, action: 'hide' }) });
+    const snap = await computeSnapshot({ envelope: env('delib.compute_snapshot', 'instructor', { sessionId: SID }) });
+    // 발언 2건 중 hidden 1건 제외 → 집계 대상 1건.
+    expect((snap.data as { statementCount: number }).statementCount).toBe(1);
+    void visible;
   });
 });

@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import { getStore, bumpRevision } from '../fixture/store'
 import { newId, nowIso } from '@/lib/util/id'
-import { isFixture } from '../client'
+import { assertProductionDbEnabled, isFixture } from '../client'
 import { isNeonEnabled } from '../neon'
 import { query, COLS, isoOrString, type RlsContext, adminContext } from '../neonHelpers'
 import type { AccessKey, Role } from '../schema'
@@ -12,6 +12,7 @@ const PROD_BCRYPT_COST = 12
 const PREFIX_BYTES = 6
 const PREFIX_LENGTH = 8
 const PREFIXED_KEY_RE = /^[A-Za-z0-9_-]{8}\..+$/
+const DUMMY_BCRYPT_HASH = '$2a$10$CwTycUXWue0Thq9StjUM0uJ8w7Y3v1Q2efgA9GN6WEuJ8V1P8aL6u'
 
 export function accessKeyHashCost(env = process.env.NODE_ENV) {
   return env === 'production' ? PROD_BCRYPT_COST : DEV_BCRYPT_COST
@@ -51,7 +52,7 @@ function active(k: AccessKey, now: string): boolean {
 }
 
 async function matchesRawKey(rawKey: string, k: AccessKey): Promise<boolean> {
-  if (isFixture() && k.key_hash.startsWith('demo-hash-')) {
+  if (process.env.NODE_ENV !== 'production' && isFixture() && k.key_hash.startsWith('demo-hash-')) {
     return k.key_hash === 'demo-hash-' + rawKey || k.key_hash.endsWith(rawKey)
   }
   try {
@@ -69,6 +70,7 @@ export const accessKeys = {
         : await query(ctx, `select ${COLS.access_keys} from access_keys`)
       return rows.map(toAccessKey)
     }
+    assertProductionDbEnabled()
     const all = [...getStore().access_keys]
     return sessionId ? all.filter((k) => k.session_id === sessionId) : all
   },
@@ -97,6 +99,7 @@ export const accessKeys = {
         [row.id, row.session_id, row.role, row.key_hash, row.expires_at, row.revoked_at, JSON.stringify(row.scope), row.key_prefix])
       return row
     }
+    assertProductionDbEnabled()
     void _rawKey
     getStore().access_keys = [...getStore().access_keys, storedRow]
     bumpRevision()
@@ -107,17 +110,23 @@ export const accessKeys = {
     if (!rawKey) return null
     const now = new Date().toISOString()
     const prefix = accessKeyPrefix(rawKey)
+    const neonEnabled = isNeonEnabled()
+    if (!neonEnabled) assertProductionDbEnabled()
 
     if (prefix) {
-      const candidates = isNeonEnabled()
+      const candidates = neonEnabled
         ? await query<AccessKeyWithPrefix>(adminContext(), `select ${COLS.access_keys}, key_prefix from access_keys where key_prefix = $1`, [prefix])
         : (getStore().access_keys as AccessKeyWithPrefix[]).filter((k) => k.key_prefix === prefix)
       for (const k of candidates) {
         if (active(k, now) && await matchesRawKey(rawKey, k)) return k
       }
+      if (candidates.length === 0) {
+        await bcrypt.compare(rawKey, DUMMY_BCRYPT_HASH)
+      }
+      return null
     }
 
-    const legacy = isNeonEnabled()
+    const legacy = neonEnabled
       ? await query<AccessKeyWithPrefix>(adminContext(), `select ${COLS.access_keys}, key_prefix from access_keys where key_prefix is null`, [])
       : (getStore().access_keys as AccessKeyWithPrefix[]).filter((k) => !k.key_prefix)
     for (const k of legacy) {
@@ -133,6 +142,7 @@ export const accessKeys = {
       const list = await query(ctx, `select ${COLS.access_keys} from access_keys where id = $1`, [id])
       return list[0] ? toAccessKey(list[0]) : undefined
     }
+    assertProductionDbEnabled()
     const s = getStore()
     s.access_keys = s.access_keys.map((k) => (k.id === id ? { ...k, revoked_at: nowIso() } : k))
     bumpRevision()
@@ -143,6 +153,7 @@ export const accessKeys = {
       await query(ctx, `delete from access_keys where id = $1`, [id])
       return
     }
+    assertProductionDbEnabled()
     const s = getStore()
     s.access_keys = s.access_keys.filter((k) => k.id !== id)
     bumpRevision()

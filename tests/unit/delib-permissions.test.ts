@@ -3,15 +3,19 @@ import { isAllowed } from '@/lib/action/permissions';
 import { listCatalog } from '@/lib/action/catalog';
 
 describe('delib permission matrix', () => {
-  it('participant는 register/submit/vote 가능', () => {
-    expect(isAllowed('delib.register_participant', 'participant')).toBe(true);
+  it('participant는 submit/vote 만 가능 (register 는 셀프서비스 제거, C-B)', () => {
     expect(isAllowed('delib.submit_statement', 'participant')).toBe(true);
     expect(isAllowed('delib.vote_statement', 'participant')).toBe(true);
   });
 
-  it('participant는 운영 액션 불가 (create/upsert_group/assign/start/moderate/compute/publish)', () => {
+  it('participant는 register 불가 — 신원은 /p/enter 서버 경로에서만 생성 (C-B)', () => {
+    expect(isAllowed('delib.register_participant', 'participant')).toBe(false);
+  });
+
+  it('participant는 운영 액션 불가 (create/register/upsert_group/assign/start/moderate/compute/publish)', () => {
     for (const a of [
       'delib.create_workshop',
+      'delib.register_participant',
       'delib.upsert_group',
       'delib.assign_participant',
       'delib.start_round',

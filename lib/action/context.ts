@@ -5,11 +5,16 @@
 import type { AxActionEnvelope } from './envelope'
 import type { RlsContext, RlsRole } from '@/lib/db/neonHelpers'
 
-export function envelopeToCtx(env: AxActionEnvelope): RlsContext {
+// 숙의 신원 — route layer 가 서버 신뢰 경로(participant 쿠키)에서만 채워 넘긴다.
+export type TrustedIdentity = { participantId?: string; groupId?: string }
+
+export function envelopeToCtx(env: AxActionEnvelope, identity: TrustedIdentity = {}): RlsContext {
   return {
     role: env.actor.role,
     sessionId: env.scope.sessionId,
-    sub: env.actor.userId
+    sub: env.actor.userId,
+    participantId: identity.participantId,
+    groupId: identity.groupId
   }
 }
 

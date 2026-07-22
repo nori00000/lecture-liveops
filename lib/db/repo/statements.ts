@@ -4,7 +4,7 @@
 import { getStore, bumpRevision } from '../fixture/store'
 import { newId, nowIso } from '@/lib/util/id'
 import { isNeonEnabled } from '../neon'
-import { query, queryOne, COLS, isoOrString, type RlsContext } from '../neonHelpers'
+import { query, queryOne, withTxn, COLS, isoOrString, type RlsContext } from '../neonHelpers'
 import type { Statement, ModerationEvent, ModerationState, ModerationAction, Role } from '../schema'
 
 type Row = Record<string, unknown>
@@ -34,25 +34,33 @@ function toModerationEvent(r: Row): ModerationEvent {
   }
 }
 
-// moderation action → 결과 상태 전이
-const MODERATION_TRANSITION: Record<ModerationAction, ModerationState> = {
-  flag: 'flagged',
-  hide: 'hidden',
-  restore: 'visible',
-  approve: 'visible'
+// moderation 상태전이표 (M-5) — 현재 상태에서 허용되는 action 만. 무의미/불가 전이는 거부한다.
+//   visible: flag→flagged, hide→hidden (restore/approve 는 no-op → 거부)
+//   flagged: hide→hidden, restore/approve→visible (flag 재신고 no-op → 거부)
+//   hidden : restore/approve→visible (hide/flag no-op → 거부)
+const MODERATION_TRANSITIONS: Record<ModerationState, Partial<Record<ModerationAction, ModerationState>>> = {
+  visible: { flag: 'flagged', hide: 'hidden' },
+  flagged: { hide: 'hidden', restore: 'visible', approve: 'visible' },
+  hidden: { restore: 'visible', approve: 'visible' }
 }
 
 export const statements = {
-  async list(ctx: RlsContext, sessionId: string, roundId?: string): Promise<Statement[]> {
+  async list(ctx: RlsContext, sessionId: string, roundId?: string, opts: { visibleOnly?: boolean } = {}): Promise<Statement[]> {
+    // visibleOnly: 집계(computeSnapshot)는 moderation_state='visible' 만 포함 (M-1). hidden/flagged 제외.
+    const visClause = opts.visibleOnly ? ` and moderation_state = 'visible'` : ''
     if (isNeonEnabled()) {
       if (roundId) {
-        const rows = await query(ctx, `select ${COLS.statements} from statements where session_id = $1 and round_id = $2 order by created_at asc`, [sessionId, roundId])
+        const rows = await query(ctx, `select ${COLS.statements} from statements where session_id = $1 and round_id = $2${visClause} order by created_at asc`, [sessionId, roundId])
         return rows.map(toStatement)
       }
-      const rows = await query(ctx, `select ${COLS.statements} from statements where session_id = $1 order by created_at asc`, [sessionId])
+      const rows = await query(ctx, `select ${COLS.statements} from statements where session_id = $1${visClause} order by created_at asc`, [sessionId])
       return rows.map(toStatement)
     }
-    return getStore().statements.filter((s) => s.session_id === sessionId && (roundId ? s.round_id === roundId : true))
+    return getStore().statements.filter((s) =>
+      s.session_id === sessionId &&
+      (roundId ? s.round_id === roundId : true) &&
+      (opts.visibleOnly ? s.moderation_state === 'visible' : true)
+    )
   },
   async findById(ctx: RlsContext, id: string): Promise<Statement | undefined> {
     if (isNeonEnabled()) {
@@ -82,20 +90,27 @@ export const statements = {
     bumpRevision()
     return row
   },
-  // 신고/숨김/복원 — 상태 전이 + moderation_events 감사 기록 (원자)
+  // 신고/숨김/복원 — 상태전이표 검증 + moderation_events 감사 기록 (원자, M-5).
+  // 없는 발언은 undefined, 허용되지 않는 전이는 throw. actorRole 은 서버 검증값이어야 한다 (N-5).
   async moderate(ctx: RlsContext, statementId: string, action: ModerationAction, actorRole: Role, reason = ''): Promise<Statement | undefined> {
-    const nextState = MODERATION_TRANSITION[action]
+    const current = await statements.findById(ctx, statementId)
+    if (!current) return undefined
+    const nextState = MODERATION_TRANSITIONS[current.moderation_state]?.[action]
+    if (!nextState) {
+      throw new Error(`delib: invalid moderation transition ${current.moderation_state} --${action}-->`)
+    }
     const eventId = newId('me')
     const now = nowIso()
     if (isNeonEnabled()) {
-      await query(ctx, `update statements set moderation_state = $2 where id = $1`, [statementId, nextState])
-      await query(ctx, `insert into moderation_events (${COLS.moderation_events}) values ($1,$2,$3,$4,$5,$6)`,
-        [eventId, statementId, actorRole, action, reason, now])
+      // 상태 전이 + 감사 기록을 한 트랜잭션으로 (부분 적용 방지).
+      await withTxn(ctx, (sql) => [
+        sql`update statements set moderation_state = ${nextState} where id = ${statementId}`,
+        sql`insert into moderation_events (id, statement_id, actor_role, action, reason, created_at)
+            values (${eventId}, ${statementId}, ${actorRole}, ${action}, ${reason}, ${now})`
+      ])
       return statements.findById(ctx, statementId)
     }
     const s = getStore()
-    const existing = s.statements.find((x) => x.id === statementId)
-    if (!existing) return undefined
     s.statements = s.statements.map((x) => (x.id === statementId ? { ...x, moderation_state: nextState } : x))
     s.moderation_events = [...s.moderation_events, { id: eventId, statement_id: statementId, actor_role: actorRole, action, reason, created_at: now }]
     bumpRevision()

@@ -4,7 +4,7 @@
 import { getStore, bumpRevision } from '../fixture/store'
 import { newId, nowIso } from '@/lib/util/id'
 import { isNeonEnabled } from '../neon'
-import { query, queryOne, COLS, isoOrString, type RlsContext } from '../neonHelpers'
+import { query, queryOne, withTxn, COLS, isoOrString, type RlsContext } from '../neonHelpers'
 import type { WorkshopGroup, GroupMembership, WorkshopRound } from '../schema'
 
 type Row = Record<string, unknown>
@@ -82,18 +82,29 @@ export const delibGroups = {
     bumpRevision()
     return row
   },
-  // 참가자를 그룹에 배정 — breakout 은 1인 1그룹이므로 기존 배정 제거 후 삽입 (idempotent)
+  // 참가자를 그룹에 배정 — 1인 1그룹(unique(participant_id)) upsert 단일 쿼리 (M-3).
+  // 동시 배정 레이스는 unique 제약이, 세션 경계는 delib_membership_guard trigger 가 강제.
   async assignParticipant(ctx: RlsContext, participantId: string, groupId: string): Promise<GroupMembership> {
+    const id = newId('gm')
+    const now = nowIso()
     if (isNeonEnabled()) {
-      const id = newId('gm')
-      const now = nowIso()
-      await query(ctx, `delete from group_memberships where participant_id = $1`, [participantId])
-      await query(ctx, `insert into group_memberships (${COLS.group_memberships}) values ($1,$2,$3,$4)`, [id, participantId, groupId, now])
+      await query(ctx, `insert into group_memberships (${COLS.group_memberships}) values ($1,$2,$3,$4)
+        on conflict (participant_id) do update set group_id = excluded.group_id, created_at = excluded.created_at`,
+        [id, participantId, groupId, now])
       return { id, participant_id: participantId, group_id: groupId, created_at: now }
     }
     const s = getStore()
-    s.group_memberships = s.group_memberships.filter((m) => m.participant_id !== participantId)
-    const row: GroupMembership = { id: newId('gm'), participant_id: participantId, group_id: groupId, created_at: nowIso() }
+    // fixture 도 trigger 를 흉내내 세션 경계를 검증한다 (이원화 일치).
+    const p = s.participants.find((x) => x.id === participantId)
+    const g = s.workshop_groups.find((x) => x.id === groupId)
+    if (!p || !g || p.session_id !== g.session_id) throw new Error('delib: membership session mismatch')
+    const existing = s.group_memberships.find((m) => m.participant_id === participantId)
+    if (existing) {
+      s.group_memberships = s.group_memberships.map((m) => (m.participant_id === participantId ? { ...m, group_id: groupId, created_at: now } : m))
+      bumpRevision()
+      return s.group_memberships.find((m) => m.participant_id === participantId)!
+    }
+    const row: GroupMembership = { id, participant_id: participantId, group_id: groupId, created_at: now }
     s.group_memberships = [...s.group_memberships, row]
     bumpRevision()
     return row
@@ -104,6 +115,14 @@ export const delibGroups = {
       return rows.map(toMembership)
     }
     return getStore().group_memberships.filter((m) => m.group_id === groupId)
+  },
+  // participant 의 현재 그룹 조회 — /p/enter 가 쿠키에 groupId 를 심을 때 사용.
+  async findMembershipByParticipant(ctx: RlsContext, participantId: string): Promise<GroupMembership | undefined> {
+    if (isNeonEnabled()) {
+      const r = await queryOne(ctx, `select ${COLS.group_memberships} from group_memberships where participant_id = $1`, [participantId])
+      return r ? toMembership(r) : undefined
+    }
+    return getStore().group_memberships.find((m) => m.participant_id === participantId)
   }
 }
 
@@ -138,7 +157,40 @@ export const delibRounds = {
         [row.id, row.session_id, row.round_index, row.title, row.mode, row.status, row.created_at])
       return row
     }
+    // fixture 도 unique(session_id, round_index) 를 흉내내 동일 에러를 던진다 (M-10 / 이원화 일치).
+    if (getStore().workshop_rounds.some((r) => r.session_id === row.session_id && r.round_index === row.round_index)) {
+      throw new Error('duplicate key value violates unique constraint "workshop_rounds_session_index_unique"')
+    }
     getStore().workshop_rounds = [...getStore().workshop_rounds, row]
+    bumpRevision()
+    return row
+  },
+  // 라운드 시작 — 원자 연산 (M-4). 같은 세션의 기존 active 를 closed 로 내리고 새 라운드를 active 로 삽입.
+  // partial unique index(status='active') 충돌을 피하려 반드시 close → insert 순서. 세션당 active 1개 보장.
+  async startRound(ctx: RlsContext, input: { session_id: string; round_index: number; title?: string; mode?: WorkshopRound['mode'] }): Promise<WorkshopRound> {
+    const row: WorkshopRound = {
+      id: newId('wr'),
+      session_id: input.session_id,
+      round_index: input.round_index,
+      title: input.title ?? '',
+      mode: input.mode ?? 'plenary',
+      status: 'active',
+      created_at: nowIso()
+    }
+    if (isNeonEnabled()) {
+      await withTxn(ctx, (sql) => [
+        sql`update workshop_rounds set status = 'closed' where session_id = ${row.session_id} and status = 'active'`,
+        sql`insert into workshop_rounds (id, session_id, round_index, title, mode, status, created_at)
+            values (${row.id}, ${row.session_id}, ${row.round_index}, ${row.title}, ${row.mode}, ${row.status}, ${row.created_at})`
+      ])
+      return row
+    }
+    const s = getStore()
+    if (s.workshop_rounds.some((r) => r.session_id === row.session_id && r.round_index === row.round_index)) {
+      throw new Error('duplicate key value violates unique constraint "workshop_rounds_session_index_unique"')
+    }
+    s.workshop_rounds = s.workshop_rounds.map((r) => (r.session_id === row.session_id && r.status === 'active' ? { ...r, status: 'closed' } : r))
+    s.workshop_rounds = [...s.workshop_rounds, row]
     bumpRevision()
     return row
   },

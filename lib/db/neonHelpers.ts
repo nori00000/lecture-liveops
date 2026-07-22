@@ -14,6 +14,18 @@ export type RlsContext = {
   role: RlsRole
   sessionId?: string
   sub?: string
+  // 숙의 신원 — participant/group. route layer 가 서버 신뢰 경로(쿠키)에서만 주입한다.
+  // RLS 의 liveops_participant_id()/liveops_group_id() 가 이 값을 읽어 visibility 판정.
+  participantId?: string
+  groupId?: string
+}
+
+// ctx → request.jwt.claims payload. participant/group 신원이 있으면 포함.
+function claimsFor(ctx: RlsContext): string {
+  const claims: Record<string, string> = { role: ctx.role, sub: ctx.sub ?? '' }
+  if (ctx.participantId) claims.participant_id = ctx.participantId
+  if (ctx.groupId) claims.group_id = ctx.groupId
+  return JSON.stringify(claims)
 }
 
 // 모든 repo 함수가 받는 ctx. P1-1: actor가 명시되지 않으면 admin (server-internal) 처리.
@@ -29,7 +41,7 @@ export async function query<T extends Row = Row>(
   params: unknown[] = []
 ): Promise<T[]> {
   const sql = getNeonAnonSql()
-  const claims = JSON.stringify({ role: ctx.role, sub: ctx.sub ?? '' })
+  const claims = claimsFor(ctx)
   const headers = JSON.stringify({ 'x-session-id': ctx.sessionId ?? '' })
   const res = await sql.transaction([
     sql`select set_config('request.jwt.claims', ${claims}, true)`,
@@ -78,7 +90,7 @@ export async function withTxn<T extends Row[][] = Row[][]>(
   buildStatements: (sql: NeonQueryFunction<false, false>) => unknown[]
 ): Promise<T> {
   const sql = getNeonAnonSql()
-  const claims = JSON.stringify({ role: ctx.role, sub: ctx.sub ?? '' })
+  const claims = claimsFor(ctx)
   const headers = JSON.stringify({ 'x-session-id': ctx.sessionId ?? '' })
   const userStatements = buildStatements(sql)
   if (userStatements.length === 0) {

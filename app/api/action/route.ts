@@ -41,12 +41,16 @@ export async function POST(req: Request) {
     )
   }
 
+  // participant 의 신원(participantId/groupId)은 오직 서명된 쿠키에서만 온다.
+  // handler 는 input 의 participantId/authorParticipantId 를 무시하고 이 값을 사용한다 (위조 방어).
+  let trusted: { participantId?: string; groupId?: string } | undefined
   if (env.actor.role === 'participant') {
     const cookieStore = await cookies()
     const participantSession = readParticipantSession(cookieStore.get(PARTICIPANT_SESSION_COOKIE)?.value)
     if (!participantSession || env.scope.sessionId !== participantSession.sessionId) {
       return NextResponse.json({ ok: false, status: 'denied', error: 'participant session required' } satisfies AxActionResult, { status: 403 })
     }
+    trusted = { participantId: participantSession.participantId, groupId: participantSession.groupId }
   } else if (isOperatorGateEnabled()) {
     // 운영자 role(admin/instructor/assistant)은 게이트 활성 시 operator 쿠키 필수.
     const cookieStore = await cookies()
@@ -113,7 +117,7 @@ export async function POST(req: Request) {
       return NextResponse.json(res, { status: 200 })
     }
 
-    const out = await handler({ envelope: env })
+    const out = await handler({ envelope: env, trusted })
     let ledgerId: string | undefined
     try {
       const row = await ledger.insert(adminContext(env.scope.sessionId ?? undefined), {

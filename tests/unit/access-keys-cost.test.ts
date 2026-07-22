@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { accessKeyHashCost, accessKeys, withAccessKeyPrefix } from '@/lib/db/repo/accessKeys'
+import { getMode, isFixture } from '@/lib/db/client'
 import { getStore, resetStore } from '@/lib/db/fixture/store'
 import { adminContext } from '@/lib/db/neonHelpers'
 
@@ -37,6 +38,7 @@ describe('access key bcrypt cost', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.unstubAllEnvs()
     restoreEnv()
   })
 
@@ -102,6 +104,34 @@ describe('access key bcrypt cost', () => {
     }]
 
     await expect(accessKeys.verify(legacyRaw)).resolves.toMatchObject({ id: 'ak-legacy' })
+  })
+
+  it('prefixed 입력에서 prefix miss가 나면 legacy bcrypt 스캔 없이 dummy bcrypt 1회만 수행한다', async () => {
+    const rawKey = withAccessKeyPrefix('legacy-secret', 'miss1234')
+    const legacyHash = await bcrypt.hash(rawKey, accessKeyHashCost())
+    getStore().access_keys = [{
+      id: 'ak-legacy-prefixed-raw',
+      session_id: 'se-001-DEMO',
+      role: 'participant',
+      key_hash: legacyHash,
+      expires_at: '2026-12-31T23:59:00+09:00',
+      revoked_at: null,
+      scope: {}
+    }]
+    const compareSpy = vi.spyOn(bcrypt, 'compare')
+
+    await expect(accessKeys.verify(rawKey)).resolves.toBeNull()
+
+    expect(compareSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('production에서 Neon DATABASE_URL이 없으면 fixture 모드로 폴백하지 않고 fail-closed 한다', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    forceFixtureMode()
+
+    expect(() => getMode()).toThrow(/Production database is not configured/)
+    expect(() => isFixture()).toThrow(/Production database is not configured/)
+    await expect(accessKeys.verify('se-001-DEMO-part-1')).rejects.toThrow(/Production database is not configured/)
   })
 
   it('demo-hash 우회는 fixture 모드에서만 허용한다', async () => {

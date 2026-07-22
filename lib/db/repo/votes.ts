@@ -69,8 +69,12 @@ export const votes = {
     }
     return out
   },
-  // fixture 전용 raw 조회 (테스트/검증용). Neon 에서는 admin 만 select 가능.
+  // 개인 표 원자료 raw 조회 — admin 전용 (거버넌스 §7-2, N-3). Neon RLS(ax_delib_votes_admin_read)와
+  // 동일 경계를 fixture 에서도 명시 강제한다. 집계는 tallyByStatements(delib_vote_tally)만 사용할 것.
   async listByStatement(ctx: RlsContext, statementId: string): Promise<StatementVote[]> {
+    if (ctx.role !== 'admin') {
+      throw new Error('delib: statement_votes raw read is admin-only')
+    }
     if (isNeonEnabled()) {
       const rows = await query(ctx, `select ${COLS.statement_votes} from statement_votes where statement_id = $1`, [statementId])
       return rows.map(toVote)
