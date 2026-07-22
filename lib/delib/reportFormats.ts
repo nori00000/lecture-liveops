@@ -6,7 +6,7 @@
 
 import ExcelJS from 'exceljs'
 import type { ExportFile } from '@/lib/export/markdown'
-import type { WorkshopReport, ReportResultItem, ReportRawStatement } from './report'
+import type { WorkshopReport, ReportRound, ReportResultItem, ReportRawStatement } from './report'
 
 const DISCLOSURE_LABEL: Record<string, string> = {
   participants: '참가자 공개',
@@ -25,6 +25,13 @@ function tallyText(item: { agree: number; disagree: number; pass: number; total:
 
 function pct(n: number): string {
   return `${Math.round(n * 100)}%`
+}
+
+// F3: 결과 섹션의 근거 스냅샷 출처 — 발행본이면 snapshotId·집계·발행 시각, 미발행이면 생성 시점 집계 표기.
+function snapshotSourceText(r: ReportRound): string {
+  return r.published
+    ? `발행 스냅샷 ${r.snapshotId} · 집계 ${r.computedAt} · 발행 ${r.publishedAt}`
+    : `미발행 — 리포트 생성 시점 집계 (${r.computedAt})`
 }
 
 // ============================================================
@@ -86,7 +93,8 @@ export function planDelibMarkdownExport(report: WorkshopReport): ExportFile[] {
             const statusLabel = r.status === 'active' ? '진행중' : r.status === 'closed' ? '종료' : '대기'
             return (
               `## 라운드 ${r.roundIndex} — ${r.title || '(제목 없음)'}\n` +
-              `- 형식: ${modeLabel}(${r.mode}) · 상태: ${statusLabel} · 집계 대상 발언 ${r.statementCount}건\n\n` +
+              `- 형식: ${modeLabel}(${r.mode}) · 상태: ${statusLabel} · 집계 대상 발언 ${r.statementCount}건\n` +
+              `- 결과 근거: ${snapshotSourceText(r)}\n\n` +
               `### 합의점 (consensus)\n${mdResultList(r.consensus, 'consensus')}\n\n` +
               `### 쟁점 (divisive)\n${mdResultList(r.divisive, 'divisive')}\n\n` +
               `### 소수의견 (minority)\n${mdResultList(r.minority, 'minority')}\n`
@@ -137,6 +145,7 @@ function esc(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 function htmlResultList(items: ReportResultItem[], kind: 'consensus' | 'divisive' | 'minority'): string {
@@ -169,6 +178,7 @@ export function planDelibHtmlExport(report: WorkshopReport): string {
           return (
             `<section class="round"><h3>라운드 ${r.roundIndex} — ${esc(r.title || '(제목 없음)')}</h3>` +
             `<p class="round-meta">형식 ${modeLabel}(${r.mode}) · 상태 ${statusLabel} · 집계 대상 발언 ${r.statementCount}건</p>` +
+            `<p class="round-meta">결과 근거: ${esc(snapshotSourceText(r))}</p>` +
             `<h4>합의점 (consensus)</h4>${htmlResultList(r.consensus, 'consensus')}` +
             `<h4>쟁점 (divisive)</h4>${htmlResultList(r.divisive, 'divisive')}` +
             `<h4>소수의견 (minority)</h4>${htmlResultList(r.minority, 'minority')}</section>`
@@ -282,6 +292,10 @@ export async function planDelibXlsxBuffer(report: WorkshopReport): Promise<Buffe
     ['미성년자 세션', p.minorSession ? '예' : '아니오'],
     ['사전 합의', p.consentConfirmed ? '확정' : '미확정']
   ])
+  // F3: 라운드별 결과 근거 스냅샷 출처 (snapshotId·집계·발행 시각 또는 미발행 표시).
+  for (const r of report.rounds) {
+    overview.addRow([`라운드 ${r.roundIndex} 결과 근거`, snapshotSourceText(r)])
+  }
 
   // 시트 2: 라운드별 결과 (consensus/divisive/minority 를 한 시트에 kind 열로)
   const results = wb.addWorksheet('라운드별 결과')

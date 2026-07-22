@@ -26,6 +26,8 @@ import {
   publishSnapshot
 } from '@/lib/action/handlers/delib';
 import { buildWorkshopReport } from '@/lib/delib/report';
+import { planDelibMarkdownDocument, planDelibHtmlExport, planDelibXlsxBuffer } from '@/lib/delib/reportFormats';
+import ExcelJS from 'exceljs';
 import { adminContext } from '@/lib/db/neonHelpers';
 import { resetStore } from '@/lib/db/fixture/store';
 import type { AxActionEnvelope } from '@/lib/action/envelope';
@@ -108,7 +110,7 @@ describe('delib workshop end-to-end (fixture)', () => {
     const report = await buildWorkshopReport(adminContext(SID), SID);
     expect(report).not.toBeNull();
     expect(report!.overview.participantCount).toBe(6);
-    // 발언 3건 전부 원자료에 존재 (숨김 포함 — 절차 증빙).
+    // 발언 3건 전부 원자료에 존재 (숨김 발언도 moderation 증빙으로 행은 남되 body 는 마스킹).
     expect(report!.rawData.length).toBe(3);
     // 라운드 1 결과에 만장일치 발언0 이 합의점 최상위.
     const r1 = report!.rounds.find((r) => r.roundId === round.roundId)!;
@@ -121,5 +123,21 @@ describe('delib workshop end-to-end (fixture)', () => {
     expect(report!.moderation.byAction.hide).toBe(1);
     // 숨김 발언은 원자료에서 상태 라벨로 구분.
     expect(report!.rawData.find((r) => r.statementId === stIds[2])!.moderationState).toBe('hidden');
+
+    // F1: 숨김 발언 body 는 마스킹되고 md/html/xlsx 어디에도 원문('쟁점 발언 3')이 없다.
+    const hiddenRaw = report!.rawData.find((r) => r.statementId === stIds[2])!;
+    expect(hiddenRaw.body).toBe('(운영자가 숨김 처리한 발언)');
+    const md = planDelibMarkdownDocument(report!);
+    const html = planDelibHtmlExport(report!);
+    expect(md).not.toContain('쟁점 발언 3');
+    expect(html).not.toContain('쟁점 발언 3');
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(await planDelibXlsxBuffer(report!) as unknown as ArrayBuffer);
+    let xlsxText = '';
+    wb.eachSheet((ws) => ws.eachRow((row) => row.eachCell((c) => { xlsxText += String(c.value ?? '') + '\n'; })));
+    expect(xlsxText).not.toContain('쟁점 발언 3');
+    expect(xlsxText).toContain('(운영자가 숨김 처리한 발언)');
+    // 공개된 발언 body 는 정상 노출 (마스킹은 숨김 발언에 한정).
+    expect(md).toContain('쟁점 발언 1');
   });
 });

@@ -18,6 +18,8 @@ const OUT_DIR = path.join(ROOT, '_workspace', 'simulation', RUN_ID)
 mkdirSync(OUT_DIR, { recursive: true })
 
 const VOTES = ['agree', 'disagree', 'pass']
+const CONCURRENCY = Math.max(1, Math.min(5, Number.parseInt(process.env.LIVEOPS_SIM_CONCURRENCY ?? '5', 10) || 5))
+const MAX_RETRIES = Math.max(0, Number.parseInt(process.env.LIVEOPS_SIM_RETRIES ?? '6', 10) || 6)
 
 // CSRF double-submit 토큰 — /api/csrf 에서 1회 발급받아 cookie+header 로 재사용.
 let CSRF_TOKEN = ''
@@ -25,6 +27,16 @@ let CSRF_TOKEN = ''
 function log(status, step, detail) {
   const tag = status === 'PASS' ? 'PASS' : status === 'INFO' ? 'INFO' : 'FAIL'
   console.log(`[${tag}] ${step} — ${detail}`)
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function retryDelayMs(res, attempt) {
+  const retryAfter = Number.parseFloat(res.headers.get('retry-after') ?? '')
+  if (Number.isFinite(retryAfter) && retryAfter > 0) return Math.ceil(retryAfter * 1000)
+  return Math.min(30_000, 500 * (2 ** attempt)) + Math.floor(Math.random() * 250)
 }
 
 async function fetchCsrf() {
@@ -44,22 +56,29 @@ async function call(action, role, input, scope = {}) {
     dryRun: false,
     input
   }
-  // Origin 헤더(origin 검사) + CSRF double-submit(cookie==header) 통과에 필요.
-  const res = await fetch(BASE + '/api/action', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      origin: BASE,
-      cookie: `liveops_csrf=${CSRF_TOKEN}`,
-      'x-csrf-token': CSRF_TOKEN
-    },
-    body: JSON.stringify(envelope)
-  })
-  const body = await res.json().catch(() => null)
-  if (res.status !== 200 || body?.ok === false) {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // Origin 헤더(origin 검사) + CSRF double-submit(cookie==header) 통과에 필요.
+    const res = await fetch(BASE + '/api/action', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: BASE,
+        cookie: `liveops_csrf=${CSRF_TOKEN}`,
+        'x-csrf-token': CSRF_TOKEN
+      },
+      body: JSON.stringify(envelope)
+    })
+    const body = await res.json().catch(() => null)
+    if (res.status === 200 && body?.ok !== false) return body
+    if (res.status === 429 && attempt < MAX_RETRIES) {
+      const delay = retryDelayMs(res, attempt)
+      log('INFO', action, `rate limited; retry ${attempt + 1}/${MAX_RETRIES} after ${Math.ceil(delay / 1000)}s`)
+      await sleep(delay)
+      continue
+    }
     throw new Error(`${action} 실패 (status ${res.status}): ${body?.error ?? 'unknown'}`)
   }
-  return body
+  throw new Error(`${action} 실패: retry exhausted`)
 }
 
 // 동시성 풀 — 대량 투표 요청을 chunk 로 나눠 병렬 실행.
@@ -107,7 +126,7 @@ async function runScenario(scn) {
 
   // 4. 참가자 등록 + 그룹 배정
   const pids = []
-  await pool([...Array(scn.participants).keys()], 20, async (i) => {
+  await pool([...Array(scn.participants).keys()], CONCURRENCY, async (i) => {
     const r = await call('delib.register_participant', 'instructor', { sessionId, displayAlias: `참가자${i + 1}`, anonHandle: `anon-${i + 1}` }, scope)
     const pid = r.data.participantId
     pids.push(pid)
@@ -137,7 +156,7 @@ async function runScenario(scn) {
       voteTasks.push({ statementId: stIds[s], participantId: pids[v], vote })
     }
   }
-  await pool(voteTasks, 40, async (t) => {
+  await pool(voteTasks, CONCURRENCY, async (t) => {
     await call('delib.vote_statement', 'instructor', { statementId: t.statementId, participantId: t.participantId, vote: t.vote }, scope)
   })
 
@@ -169,6 +188,7 @@ async function runScenario(scn) {
 ;(async () => {
   console.log(`run_id: ${RUN_ID}`)
   console.log(`base  : ${BASE}`)
+  console.log(`concurrency: ${CONCURRENCY}`)
   console.log(`out   : ${OUT_DIR}\n`)
 
   const health = await fetch(BASE + '/api/health').then((r) => r.json()).catch(() => null)

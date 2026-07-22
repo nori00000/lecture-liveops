@@ -63,16 +63,16 @@ describe('csrf core', () => {
 describe('middleware csrf gate', () => {
   beforeEach(() => resetRateLimitForTest())
 
-  it('토큰 없는 POST → 403 csrf_invalid (origin 헤더 있을 때)', () => {
+  it('토큰 없는 POST → 403 csrf_invalid (origin 헤더 있을 때)', async () => {
     const req = makeReq('http://localhost:3010/api/action', {
       method: 'POST',
       headers: { origin: 'http://localhost:3010' }
     })
-    const res = middleware(req)
+    const res = await middleware(req)
     expect(res.status).toBe(403)
   })
 
-  it('cookie/header 불일치 POST → 403', () => {
+  it('cookie/header 불일치 POST → 403', async () => {
     const token = generateCsrfToken()
     const other = generateCsrfToken()
     const req = makeReq('http://localhost:3010/api/action', {
@@ -80,38 +80,38 @@ describe('middleware csrf gate', () => {
       headers: { origin: 'http://localhost:3010', [CSRF_HEADER]: other },
       cookie: `${CSRF_COOKIE}=${token}`
     })
-    const res = middleware(req)
+    const res = await middleware(req)
     expect(res.status).toBe(403)
   })
 
-  it('cookie/header 일치 POST → 통과 (200)', () => {
+  it('cookie/header 일치 POST → 통과 (200)', async () => {
     const token = generateCsrfToken()
     const req = makeReq('http://localhost:3010/api/action', {
       method: 'POST',
       headers: { origin: 'http://localhost:3010', [CSRF_HEADER]: token },
       cookie: `${CSRF_COOKIE}=${token}`
     })
-    const res = middleware(req)
+    const res = await middleware(req)
     expect(res.status).toBe(200)
   })
 
-  it('면제 경로 /api/csrf POST 토큰 없어도 통과', () => {
+  it('면제 경로 /api/csrf POST 토큰 없어도 통과', async () => {
     const req = makeReq('http://localhost:3010/api/csrf', {
       method: 'POST',
       headers: { origin: 'http://localhost:3010' }
     })
-    const res = middleware(req)
+    const res = await middleware(req)
     expect(res.status).toBe(200)
   })
 
-  it('origin 헤더 없는 POST는 server API key가 있어야 통과', () => {
+  it('origin 헤더 없는 POST는 server API key가 있어야 통과', async () => {
     const previous = process.env.LIVEOPS_SERVER_API_KEY
     process.env.LIVEOPS_SERVER_API_KEY = 'server-test-key'
     const req = makeReq('http://localhost:3010/api/action', {
       method: 'POST',
       headers: { 'x-liveops-api-key': 'server-test-key' }
     })
-    const res = middleware(req)
+    const res = await middleware(req)
     expect(res.status).toBe(200)
     if (previous === undefined) delete process.env.LIVEOPS_SERVER_API_KEY
     else process.env.LIVEOPS_SERVER_API_KEY = previous

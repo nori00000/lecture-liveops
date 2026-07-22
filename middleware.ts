@@ -21,6 +21,8 @@ import {
   verifyArchiveCookie
 } from '@/lib/security/archiveGate'
 
+const PARTICIPANT_SESSION_COOKIE = 'liveops_participant_session'
+
 // P1-6: request id 생성 (응답 헤더 + 다운스트림 핸들러에 전달)
 function newRequestId(): string {
   // Edge runtime: crypto.randomUUID() 사용 가능
@@ -49,7 +51,65 @@ function hasServerApiKey(req: NextRequest): boolean {
   return expected.length > 0 && constantTimeCompare(expected, provided)
 }
 
-export function middleware(req: NextRequest): NextResponse {
+function stableHash(value: string): string {
+  let h = 5381
+  for (let i = 0; i < value.length; i += 1) h = ((h << 5) + h) ^ value.charCodeAt(i)
+  return (h >>> 0).toString(36)
+}
+
+function base64urlDecode(value: string): string | null {
+  try {
+    const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+    return atob(padded)
+  } catch {
+    return null
+  }
+}
+
+function participantSubject(cookieValue: string): string {
+  const payload = cookieValue.split('.')[0]
+  const decoded = payload ? base64urlDecode(payload) : null
+  if (decoded) {
+    try {
+      const parsed = JSON.parse(decoded) as { participantId?: unknown; sessionId?: unknown; accessKeyId?: unknown }
+      if (typeof parsed.participantId === 'string' && parsed.participantId) return `participant:${parsed.participantId}`
+      if (typeof parsed.sessionId === 'string' && typeof parsed.accessKeyId === 'string') {
+        return `participant:${parsed.sessionId}:${parsed.accessKeyId}`
+      }
+    } catch {
+      // fall back to hashing the cookie below
+    }
+  }
+  return `participant-cookie:${stableHash(cookieValue)}`
+}
+
+function rateLimitSubject(req: NextRequest, ip: string): { key: string; authenticated: boolean } {
+  const participantCookie = req.cookies.get(PARTICIPANT_SESSION_COOKIE)?.value
+  if (participantCookie) return { key: participantSubject(participantCookie), authenticated: true }
+
+  const operatorCookie = req.cookies.get(OPERATOR_COOKIE)?.value
+  if (operatorCookie && verifyOperatorCookie(operatorCookie)) {
+    return { key: `operator:${stableHash(operatorCookie)}`, authenticated: true }
+  }
+
+  return { key: `ip:${ip}`, authenticated: false }
+}
+
+async function actionPolicy(req: NextRequest, pathname: string): Promise<{ action?: string; actorRole?: string }> {
+  if (pathname !== '/api/action') return {}
+  try {
+    const body = await req.clone().json() as { action?: unknown; actor?: { role?: unknown } }
+    return {
+      action: typeof body.action === 'string' ? body.action : undefined,
+      actorRole: typeof body.actor?.role === 'string' ? body.actor.role : undefined
+    }
+  } catch {
+    return {}
+  }
+}
+
+export async function middleware(req: NextRequest): Promise<NextResponse> {
   const { pathname } = req.nextUrl
   const method = req.method.toUpperCase()
   const isMutating = method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE'
@@ -116,7 +176,9 @@ export function middleware(req: NextRequest): NextResponse {
   if (isMutating && !isExemptFromRateLimit(pathname) && !rateLimitDisabled) {
     const fwd = req.headers.get('x-forwarded-for') ?? req.headers.get('x-real-ip') ?? '0.0.0.0'
     const ip = fwd.split(',')[0].trim() || '0.0.0.0'
-    const r = checkRateLimit(ip, pathname)
+    const subject = rateLimitSubject(req, ip)
+    const policy = await actionPolicy(req, pathname)
+    const r = checkRateLimit(subject.key, pathname, { authenticated: subject.authenticated, ...policy })
     if (r.limited) {
       return jsonError(
         429,

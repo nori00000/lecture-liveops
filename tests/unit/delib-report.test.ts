@@ -17,9 +17,12 @@ import {
   createWorkshop,
   registerParticipant,
   submitStatement,
-  voteStatement
+  voteStatement,
+  moderateStatement
 } from '@/lib/action/handlers/delib';
 import { buildWorkshopReport } from '@/lib/delib/report';
+import { planDelibMarkdownDocument, planDelibHtmlExport, planDelibXlsxBuffer } from '@/lib/delib/reportFormats';
+import ExcelJS from 'exceljs';
 import { adminContext } from '@/lib/db/neonHelpers';
 import { resetStore } from '@/lib/db/fixture/store';
 import type { AxActionEnvelope } from '@/lib/action/envelope';
@@ -121,7 +124,7 @@ describe('delib workshop report (fixture mode)', () => {
     expect(r0.consensus.map((c) => c.statementId)).not.toContain(tiny);
   });
 
-  it('익명 모드에서 원자료 작성자 alias 를 마스킹한다', async () => {
+  it('익명 모드에서 원자료 작성자를 비연결 처리한다 (F4)', async () => {
     await confirmConsent(true); // anonymousMode=true 로 갱신
     const round = await bootRound();
     const author = await newParticipant('실명홍길동', 'anon-gildong');
@@ -135,9 +138,46 @@ describe('delib workshop report (fixture mode)', () => {
     const report = await buildWorkshopReport(adminContext(SID), SID);
     const raw = report!.rawData.find((r) => r.statementId === stId)!;
     expect(report!.procedure.anonymousMode).toBe(true);
-    expect(raw.authorAlias).toBe('anon-gildong'); // anon_handle 사용
-    expect(raw.authorAlias).not.toBe('실명홍길동'); // display_alias 미노출
-    expect(JSON.stringify(report)).not.toContain('실명홍길동');
+    // F4: 작성자 컬럼은 '익명' 고정 — 반복 핸들(anon_handle)/participantId 로 작성자별 발언을 연결할 수 없다.
+    expect(raw.authorAlias).toBe('익명');
+    const serialized = JSON.stringify(report);
+    expect(serialized).not.toContain('실명홍길동'); // display_alias 미노출
+    expect(serialized).not.toContain('anon-gildong'); // anon_handle 비노출 (비연결)
+    expect(serialized).not.toContain(author); // participantId 비노출 (비연결)
+    // traceability 는 statementId 로 유지.
+    expect(raw.statementId).toBe(stId);
+  });
+
+  it('숨김(hidden) 발언 body 를 원자료·md/html/xlsx 어디에도 노출하지 않는다 (F1)', async () => {
+    const round = await bootRound();
+    const p1 = await newParticipant('앨리스', 'anon-1');
+    const p2 = await newParticipant('밥', 'anon-2');
+    const p3 = await newParticipant('캐럴', 'anon-3');
+    const secret = await newStatement(round, '민감한 숨김 대상 발언 XYZ');
+    await vote(secret, p1, 'agree');
+    await vote(secret, p2, 'disagree');
+    await vote(secret, p3, 'pass');
+    // 운영자가 숨김 처리.
+    await moderateStatement({ envelope: env('delib.moderate_statement', 'instructor', { statementId: secret, action: 'hide', reason: '부적절' }) });
+
+    const report = await buildWorkshopReport(adminContext(SID), SID);
+    const raw = report!.rawData.find((r) => r.statementId === secret)!;
+    // moderation 사실은 남기되 body 는 마스킹.
+    expect(raw.moderationState).toBe('hidden');
+    expect(raw.body).toBe('(운영자가 숨김 처리한 발언)');
+    // md/html 어디에도 원문이 없다.
+    const md = planDelibMarkdownDocument(report!);
+    const html = planDelibHtmlExport(report!);
+    expect(md).not.toContain('민감한 숨김 대상 발언 XYZ');
+    expect(html).not.toContain('민감한 숨김 대상 발언 XYZ');
+    expect(md).toContain('(운영자가 숨김 처리한 발언)');
+    // xlsx 셀에도 원문이 없다.
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(await planDelibXlsxBuffer(report!) as unknown as ArrayBuffer);
+    let xlsxText = '';
+    wb.eachSheet((ws) => ws.eachRow((row) => row.eachCell((c) => { xlsxText += String(c.value ?? '') + '\n'; })));
+    expect(xlsxText).not.toContain('민감한 숨김 대상 발언 XYZ');
+    expect(xlsxText).toContain('(운영자가 숨김 처리한 발언)');
   });
 
   it('traceability — 결과 항목이 원 statementId/roundId 에 연결된다', async () => {

@@ -11,6 +11,12 @@ declare global {
 const WINDOW_MS = 60_000
 const ANON_LIMIT = 30
 const AUTH_LIMIT = 60
+const OPERATOR_BULK_LIMIT = 300
+
+const OPERATOR_BULK_ACTIONS = new Set([
+  'delib.register_participant',
+  'delib.assign_participant'
+])
 
 function store(): Map<string, Bucket> {
   if (!globalThis.__AX_RATELIMIT__) globalThis.__AX_RATELIMIT__ = new Map()
@@ -25,9 +31,23 @@ export type RateLimitResult = {
   retryAfterSec: number
 }
 
-export function checkRateLimit(ip: string, pathname: string): RateLimitResult {
-  const limit = pathname.startsWith('/api/admin') ? AUTH_LIMIT : ANON_LIMIT
-  const key = `${ip}:${pathname}`
+export type RateLimitPolicy = {
+  action?: string
+  actorRole?: string
+  authenticated?: boolean
+}
+
+function limitFor(pathname: string, policy: RateLimitPolicy = {}): number {
+  if (policy.action === 'delib.vote_statement') return policy.actorRole === 'participant' ? AUTH_LIMIT : OPERATOR_BULK_LIMIT
+  if (policy.action && OPERATOR_BULK_ACTIONS.has(policy.action)) return OPERATOR_BULK_LIMIT
+  if (pathname.startsWith('/api/admin')) return AUTH_LIMIT
+  if (policy.authenticated) return AUTH_LIMIT
+  return ANON_LIMIT
+}
+
+export function checkRateLimit(subjectKey: string, pathname: string, policy: RateLimitPolicy = {}): RateLimitResult {
+  const limit = limitFor(pathname, policy)
+  const key = `${subjectKey}:${pathname}`
   const now = Date.now()
   const s = store()
   const b = s.get(key)

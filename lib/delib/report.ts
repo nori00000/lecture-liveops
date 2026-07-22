@@ -5,12 +5,14 @@
 //  - 모든 결과 항목은 원 statementId/roundId 에 연결된다 (traceability). 결론은 원자료로 되짚을 수 있어야 한다.
 //  - 개인 투표 원자료는 리포트에 절대 담지 않는다 — statement 별 집계(tally)만 (거버넌스 §7-2).
 //  - k-익명 억제(computeSnapshotPayload.suppressed)는 리포트에서도 "표본 부족"으로 표기한다 (M-9).
-//  - 익명 모드면 원자료 섹션의 참가자 alias 를 anon_handle 로 마스킹한다 (§7-2/M4).
+//  - 익명 모드면 원자료 섹션의 작성자 컬럼을 '익명'으로 고정한다 (§7-2/M4, F4). 반복 핸들로 작성자별 발언을 연결하지 못하게 비연결 처리하고 traceability 는 statementId 로만 유지한다.
+//  - 숨김(hidden) 처리된 발언은 원자료 body 를 마스킹한다 (F1). moderation 사실·집계·이벤트 요약은 남긴다.
+//  - 결과 섹션은 발행된(published) 스냅샷이 있으면 그 저장 payload 를 신뢰한다 (F3). 발행 시점 집계와 리포트가 어긋나지 않게 한다.
 
 import type { RlsContext } from '@/lib/db/neonHelpers'
-import { sessions, participants, delibRounds, statements, votes } from '@/lib/db/repo'
-import { computeSnapshotPayload, type StatementMetric, type MinorityFlag } from './metrics'
-import type { RoundMode, RoundStatus, ModerationState, ModerationAction, Role } from '@/lib/db/schema'
+import { sessions, participants, delibRounds, statements, votes, landscape } from '@/lib/db/repo'
+import { computeSnapshotPayload, type StatementMetric, type MinorityFlag, type SnapshotPayload } from './metrics'
+import type { RoundMode, RoundStatus, ModerationState, ModerationAction, Role, LandscapeSnapshot } from '@/lib/db/schema'
 
 // 결과 항목 — consensus/divisive/minority 랭킹 1건. 원 statementId/roundId 로 되짚을 수 있다 (traceability).
 export type ReportResultItem = {
@@ -40,6 +42,11 @@ export type ReportRound = {
   consensus: ReportResultItem[]
   divisive: ReportResultItem[]
   minority: ReportResultItem[]
+  // F3: 결과 근거가 된 스냅샷 출처. published 면 발행 스냅샷 저장값, 아니면 리포트 생성 시점 재집계.
+  snapshotId: string | null
+  computedAt: string
+  publishedAt: string | null
+  published: boolean
 }
 
 // 원자료 섹션의 발언 1건 — statement 별 집계(개인 표 없음). k-익명 억제·익명 마스킹 반영.
@@ -146,14 +153,12 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
 
   const procedure = readProcedure(session.metadata)
   const anonymousMode = procedure.anonymousMode
+  const generatedAt = new Date().toISOString()
 
-  // 참가자 alias 맵 — 익명 모드면 anon_handle, 아니면 display_alias.
-  const aliasById = new Map<string, string>()
+  // 기명 모드 원자료 작성자 표기용 맵 (display_alias). 익명 모드에서는 작성자 컬럼을 '익명'으로 고정하므로(F4) 쓰지 않는다.
+  const displayAliasById = new Map<string, string>()
   for (const p of parts) {
-    const alias = anonymousMode
-      ? (p.anon_handle || p.id.slice(0, 6))
-      : (p.display_alias || p.anon_handle || p.id.slice(0, 6))
-    aliasById.set(p.id, alias)
+    displayAliasById.set(p.id, p.display_alias || p.anon_handle || p.id.slice(0, 6))
   }
 
   // 발언 메타 조회용 맵 (body / round). traceability: 결과 → statementId → body/round.
@@ -172,15 +177,20 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
   const rawMetricById = new Map(rawPayload.statements.map((m) => [m.statementId, m] as const))
   const rawData: ReportRawStatement[] = allStatements.map((s) => {
     const m = rawMetricById.get(s.id)
+    // F4: 익명 모드면 작성자 컬럼을 '익명'으로 고정해 반복 핸들(anon_handle)·participantId 로 작성자별 발언을 연결하지 못하게 한다.
+    //     운영자 대리 발언은 원래 author 가 없으므로 그대로 '(운영자 대리)'.
     const authorAlias = s.author_participant_id
-      ? (aliasById.get(s.author_participant_id) ?? s.author_participant_id.slice(0, 6))
+      ? (anonymousMode ? '익명' : (displayAliasById.get(s.author_participant_id) ?? s.author_participant_id.slice(0, 6)))
       : '(운영자 대리)'
+    // F1: 숨김(hidden) 발언은 body 를 마스킹한다 (신고됨/flagged 는 상태 라벨만 유지하고 body 는 보존).
+    //     moderation 사실(moderationState)·집계·이벤트 요약은 남긴다.
+    const body = s.moderation_state === 'hidden' ? '(운영자가 숨김 처리한 발언)' : s.body
     return {
       statementId: s.id,
       roundId: s.round_id,
       groupId: s.group_id,
       authorAlias,
-      body: s.body,
+      body,
       moderationState: s.moderation_state,
       agree: m?.agree ?? 0,
       disagree: m?.disagree ?? 0,
@@ -190,9 +200,38 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
     }
   })
 
-  // ── 라운드별 결과: 각 라운드의 visible 발언만으로 consensus/divisive/minority 계산.
-  // compute_snapshot 핸들러와 동일하게 visible 만 집계 대상 (hidden/flagged 제외, M-1).
+  // ── F3: 라운드별 결과의 근거 스냅샷 선택.
+  // 발행된(published_at != null) 스냅샷이 있으면 그 저장 payload 를 결과 섹션 기준으로 쓴다 (발행 시점 집계 == 프로젝터/결과판).
+  // landscape.list 는 computed_at desc 정렬이므로 라운드별 첫 published 스냅샷이 최신 발행본이다.
+  const snapshots = await landscape.list(ctx, sessionId)
+  const publishedByRound = new Map<string, LandscapeSnapshot>()
+  for (const snap of snapshots) {
+    if (snap.published_at == null || snap.round_id == null) continue
+    if (!publishedByRound.has(snap.round_id)) publishedByRound.set(snap.round_id, snap)
+  }
+
   const reportRounds: ReportRound[] = rounds.map((r) => {
+    const published = publishedByRound.get(r.id)
+    if (published) {
+      // 발행 스냅샷 저장값 신뢰 (computeSnapshotPayload 와 동일 계산이므로 재집계하지 않는다).
+      const payload = published.payload as unknown as SnapshotPayload
+      return {
+        roundId: r.id,
+        roundIndex: r.round_index,
+        title: r.title,
+        mode: r.mode,
+        status: r.status,
+        statementCount: (payload.statements ?? []).filter((m) => !m.suppressed).length,
+        consensus: (payload.consensus ?? []).map((m) => toResultItem(m, bodyById, roundById)),
+        divisive: (payload.divisive ?? []).map((m) => toResultItem(m, bodyById, roundById)),
+        minority: (payload.minority ?? []).map((m) => toResultItem(m, bodyById, roundById)),
+        snapshotId: published.id,
+        computedAt: published.computed_at,
+        publishedAt: published.published_at,
+        published: true
+      }
+    }
+    // 미발행 라운드 — 리포트 생성 시점에 현재 visible 발언으로 재집계 (hidden/flagged 제외, M-1).
     const roundStatements = allStatements.filter((s) => s.round_id === r.id && s.moderation_state === 'visible')
     const payload = computeSnapshotPayload(
       roundStatements.map((s) => ({ id: s.id, group_id: s.group_id })),
@@ -207,7 +246,11 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
       statementCount: payload.statements.filter((m) => !m.suppressed).length,
       consensus: payload.consensus.map((m) => toResultItem(m, bodyById, roundById)),
       divisive: payload.divisive.map((m) => toResultItem(m, bodyById, roundById)),
-      minority: payload.minority.map((m) => toResultItem(m, bodyById, roundById))
+      minority: payload.minority.map((m) => toResultItem(m, bodyById, roundById)),
+      snapshotId: null,
+      computedAt: generatedAt,
+      publishedAt: null,
+      published: false
     }
   })
 
@@ -232,7 +275,7 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
       participantCount: parts.length,
       roundCount: rounds.length,
       statementCount: allStatements.length,
-      generatedAt: new Date().toISOString()
+      generatedAt
     },
     procedure,
     rounds: reportRounds,
