@@ -131,7 +131,8 @@ export const COLS = {
   workshop_groups: 'id, session_id, label, topic',
   group_memberships: 'id, participant_id, group_id, created_at',
   workshop_rounds: 'id, session_id, round_index, title, mode, status, created_at',
-  statements: 'id, session_id, round_id, group_id, author_participant_id, body, visibility, moderation_state, created_at',
+  // evidence_kind 는 0018 에서 추가된 nullable 컬럼 (Q1 근거 유형 자기 태깅). 컬럼 순서 = insert 값 순서.
+  statements: 'id, session_id, round_id, group_id, author_participant_id, body, visibility, moderation_state, created_at, evidence_kind',
   statement_votes: 'id, statement_id, participant_id, vote, created_at',
   landscape_snapshots: 'id, session_id, round_id, computed_at, payload, published_at',
   moderation_events: 'id, statement_id, actor_role, action, reason, created_at'

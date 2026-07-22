@@ -7,8 +7,10 @@ import { swrFetcher } from '@/lib/api/fetcher'
 import { invoke } from '@/lib/util/envelope'
 import { Badge, Button, Card, CardHeader, Input, PageHeader, Select, Textarea } from '@/components/ui/primitives'
 import { VoteControls } from '@/components/delib/VoteControls'
+import { EvidenceKindControls } from '@/components/delib/EvidenceKindControls'
 import { RecordingBanner } from '@/components/delib/RecordingBanner'
-import type { VoteValue } from '@/lib/db/schema'
+import type { VoteValue, EvidenceKind } from '@/lib/db/schema'
+import type { EvidenceKindRoundBreakdown, EvidenceKindDistribution } from '@/lib/delib/metrics'
 
 type Member = { participantId: string; alias: string }
 type GroupView = { id: string; label: string; topic: string; members: Member[] }
@@ -36,6 +38,8 @@ type ConsoleData = {
   moderationQueue?: StatementCard[]
   voteProgress?: { totalVotes: number; expectedVotes: number; ratio: number }
   snapshots?: { id: string; roundId: string | null; computedAt: string; publishedAt: string | null }[]
+  // Q1 근거 유형 분포 — 서버에서 k-익명 억제까지 마친 집계값 (개별 발언 태그는 내려오지 않는다).
+  evidenceByRound?: EvidenceKindRoundBreakdown[]
   recording?: { active: boolean; consentAt: string | null; offsiteProcessing: boolean }
 }
 
@@ -121,6 +125,9 @@ export default function WorkshopConsolePage({ params }: { params: Promise<{ id: 
           <div className="mt-1 text-xs text-textDim">{ratioPct}%</div>
         </div>
       </Card>
+
+      {/* Q1 근거 유형 분포 (라운드별 · 그룹 단위) */}
+      <EvidencePanel breakdowns={data?.evidenceByRound ?? []} rounds={data?.rounds ?? []} groups={data?.groups ?? []} />
 
       {/* 그룹 보드 (좌석맵 재해석 — 그룹별 멤버 카드) */}
       <GroupBoard groups={data?.groups ?? []} />
@@ -312,6 +319,102 @@ function ReportDownload({ sessionId }: { sessionId: string }) {
   )
 }
 
+// ── Q1 근거 유형 분포 패널 (DELIBERATION-QUALITY-PLAN §2 Q1)
+// 참가자 자기 태깅의 집계만 본다 — AI 판정이 아니므로 "틀린 지적"이 발생하지 않는다.
+// 개인 단위는 표시하지 않는다. 기여자 3명 미만 그룹은 서버에서 이미 억제되어 내려온다.
+// 프로젝터에는 넣지 않는다 (참가자 대면 압박 방지) — 이 패널은 퍼실리테이터 전용이다.
+const EVIDENCE_LABELS: Array<{ key: 'experience' | 'source' | 'estimate' | 'unspecified'; label: string; barClass: string }> = [
+  { key: 'experience', label: '경험', barClass: 'bg-accent' },
+  { key: 'source', label: '자료·출처', barClass: 'bg-info' },
+  { key: 'estimate', label: '추정', barClass: 'bg-warn' },
+  { key: 'unspecified', label: '미지정', barClass: 'bg-textMute' }
+]
+
+function EvidenceBars({ dist }: { dist: EvidenceKindDistribution }) {
+  if (dist.suppressed) {
+    return (
+      <p className="text-xs text-textMute">
+        표본 부족(기여자 {dist.contributors}명 &lt; 3) — 개인 태깅 역추론 방지를 위해 분포를 표시하지 않습니다.
+      </p>
+    )
+  }
+  if (dist.total === 0) return <p className="text-xs text-textMute">집계 대상 발언이 없습니다.</p>
+  return (
+    <ul className="space-y-1">
+      {EVIDENCE_LABELS.map((o) => {
+        const count = dist.counts[o.key]
+        const ratioPct = Math.round(dist.ratios[o.key] * 100)
+        return (
+          <li key={o.key} className="flex items-center gap-2 text-xs">
+            <span className="w-16 shrink-0 text-textDim">{o.label}</span>
+            <span className="flex-1 h-2 rounded-full bg-surfaceAlt overflow-hidden">
+              <span className={`block h-full ${o.barClass}`} style={{ width: `${ratioPct}%` }} />
+            </span>
+            {/* 색만으로 구분되지 않도록 수치를 항상 함께 표기 */}
+            <span className="w-24 shrink-0 text-right text-textDim">{count}건 · {ratioPct}%</span>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+function EvidencePanel({
+  breakdowns,
+  rounds,
+  groups
+}: {
+  breakdowns: EvidenceKindRoundBreakdown[]
+  rounds: Round[]
+  groups: GroupView[]
+}) {
+  const roundLabel = (roundId: string | null) => {
+    if (roundId == null) return '라운드 미지정'
+    const r = rounds.find((x) => x.id === roundId)
+    return r ? `라운드 ${r.round_index} — ${r.title || '(제목 없음)'}` : `라운드 (${roundId})`
+  }
+  const groupLabel = (groupId: string) => groups.find((g) => g.id === groupId)?.label ?? groupId
+
+  return (
+    <Card>
+      <CardHeader title="근거 유형 분포" hint="참가자 자기 태깅 · 그룹 단위" />
+      <div className="p-4 space-y-4">
+        <p className="text-xs text-textMute">
+          참가자가 스스로 고른 근거 유형입니다. 시스템이 발언을 판정하지 않으므로 오탐이 없습니다.
+          개인 단위는 표시하지 않으며 기여자 3명 미만 그룹은 억제됩니다. 프로젝터에는 표시되지 않습니다.
+        </p>
+        {breakdowns.length === 0 ? (
+          <p className="text-sm text-textDim">아직 집계할 발언이 없습니다.</p>
+        ) : (
+          breakdowns.map((b) => (
+            <div key={b.roundId ?? '(none)'} className="rounded-md border border-border bg-bg p-3 space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium text-text">{roundLabel(b.roundId)}</span>
+                <Badge tone="neutral">발언 {b.overall.suppressed ? '표본 부족' : `${b.overall.total}건`}</Badge>
+              </div>
+              <div>
+                <div className="text-xs text-textDim mb-1">라운드 전체</div>
+                <EvidenceBars dist={b.overall} />
+              </div>
+              {b.byGroup.length > 0 ? (
+                <div className="space-y-2">
+                  <div className="text-xs text-textDim">그룹별</div>
+                  {b.byGroup.map((g) => (
+                    <div key={g.groupId} className="rounded border border-border p-2">
+                      <div className="text-xs text-text mb-1">{groupLabel(g.groupId)}</div>
+                      <EvidenceBars dist={g.distribution} />
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ))
+        )}
+      </div>
+    </Card>
+  )
+}
+
 function GroupBoard({ groups }: { groups: GroupView[] }) {
   return (
     <Card>
@@ -445,6 +548,8 @@ function ProxyInput({
 }) {
   const [participantId, setParticipantId] = useState('')
   const [body, setBody] = useState('')
+  // Q1: 대리입력에서도 근거 유형을 고를 수 있다 — 단 강제하지 않는다(종이 제출에 표기가 없을 수 있다).
+  const [evidenceKind, setEvidenceKind] = useState<EvidenceKind | null>(null)
 
   return (
     <Card>
@@ -464,14 +569,28 @@ function ProxyInput({
         <div className="space-y-2">
           <label htmlFor="proxy-statement" className="block text-xs text-textDim">의견 대리 제출</label>
           <Textarea id="proxy-statement" rows={2} value={body} onChange={(e) => setBody(e.target.value)} placeholder="종이에 적힌 의견을 입력" disabled={busy} />
+          <div>
+            <div className="text-xs text-textDim mb-1">이 주장의 근거 <span className="text-textMute">(선택사항)</span></div>
+            <EvidenceKindControls idBase="proxy-evidence-kind" value={evidenceKind} onChange={setEvidenceKind} disabled={busy} />
+          </div>
           <div className="flex justify-end">
             <Button
               size="sm"
               variant="accent"
               disabled={busy || !participantId || !body.trim()}
               onClick={async () => {
-                const ok = await onSubmit({ sessionId, roundId: activeRoundId ?? undefined, authorParticipantId: participantId, body: body.trim(), visibility: 'group' })
-                if (ok) setBody('')
+                const ok = await onSubmit({
+                  sessionId,
+                  roundId: activeRoundId ?? undefined,
+                  authorParticipantId: participantId,
+                  body: body.trim(),
+                  visibility: 'group',
+                  evidenceKind: evidenceKind ?? undefined
+                })
+                if (ok) {
+                  setBody('')
+                  setEvidenceKind(null)
+                }
               }}
             >
               대리 제출

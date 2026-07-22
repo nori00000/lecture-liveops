@@ -366,6 +366,10 @@ export const StatementVisibilityEnum = z.enum(['public', 'group', 'private'])
 export const ModerationStateEnum = z.enum(['visible', 'flagged', 'hidden'])
 export const VoteValueEnum = z.enum(['agree', 'disagree', 'pass'])
 export const ModerationActionEnum = z.enum(['flag', 'hide', 'restore', 'approve'])
+// Q1 근거 유형 자기 태깅 (DELIBERATION-QUALITY-PLAN §2 Q1) — 참가자 **본인**이 고른다.
+// experience 경험(직접 겪음) / source 자료·출처(근거 있음) / estimate 추정(제 생각).
+// AI 판정이 아니므로 오탐이 없다. 미지정(null)은 허용 — 강제하면 제출 마찰.
+export const EvidenceKindEnum = z.enum(['experience', 'source', 'estimate'])
 
 export const ParticipantSchema = z.object({
   id,
@@ -409,6 +413,8 @@ export const StatementSchema = z.object({
   body: z.string(),
   visibility: StatementVisibilityEnum.default('group'),
   moderation_state: ModerationStateEnum.default('visible'),
+  // Q1: 근거 유형 자기 태깅. 선택사항이므로 nullable — 기존 행·대리입력은 null.
+  evidence_kind: EvidenceKindEnum.nullable().default(null),
   created_at: ts
 })
 
@@ -491,6 +497,7 @@ export type StatementVisibility = z.infer<typeof StatementVisibilityEnum>
 export type ModerationState = z.infer<typeof ModerationStateEnum>
 export type VoteValue = z.infer<typeof VoteValueEnum>
 export type ModerationAction = z.infer<typeof ModerationActionEnum>
+export type EvidenceKind = z.infer<typeof EvidenceKindEnum>
 
 export type Role = z.infer<typeof RoleEnum>
 export type Visibility = z.infer<typeof VisibilityEnum>

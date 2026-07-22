@@ -5,7 +5,7 @@ import { getStore, bumpRevision } from '../fixture/store'
 import { newId, nowIso } from '@/lib/util/id'
 import { isNeonEnabled } from '../neon'
 import { query, queryOne, withTxn, COLS, isoOrString, type RlsContext } from '../neonHelpers'
-import type { Statement, ModerationEvent, ModerationState, ModerationAction, Role } from '../schema'
+import type { Statement, ModerationEvent, ModerationState, ModerationAction, Role, EvidenceKind } from '../schema'
 
 type Row = Record<string, unknown>
 
@@ -19,6 +19,8 @@ function toStatement(r: Row): Statement {
     body: String(r.body ?? ''),
     visibility: (r.visibility as Statement['visibility']) ?? 'group',
     moderation_state: (r.moderation_state as Statement['moderation_state']) ?? 'visible',
+    // Q1: 근거 유형 자기 태깅. 미지정은 null (fixture/Neon 동일).
+    evidence_kind: r.evidence_kind == null ? null : (r.evidence_kind as EvidenceKind),
     created_at: isoOrString(r.created_at)
   }
 }
@@ -69,7 +71,8 @@ export const statements = {
     }
     return getStore().statements.find((s) => s.id === id)
   },
-  async submit(ctx: RlsContext, input: Omit<Statement, 'id' | 'created_at' | 'moderation_state'> & Partial<Pick<Statement, 'id' | 'moderation_state'>>): Promise<Statement> {
+  // evidence_kind 는 선택 입력 — 미지정 호출자(기존 경로)는 그대로 동작한다.
+  async submit(ctx: RlsContext, input: Omit<Statement, 'id' | 'created_at' | 'moderation_state' | 'evidence_kind'> & Partial<Pick<Statement, 'id' | 'moderation_state' | 'evidence_kind'>>): Promise<Statement> {
     const row: Statement = {
       id: input.id ?? newId('st'),
       session_id: input.session_id,
@@ -79,11 +82,13 @@ export const statements = {
       body: input.body,
       visibility: input.visibility ?? 'group',
       moderation_state: input.moderation_state ?? 'visible',
+      // Q1: 미지정 허용 — 참가자가 고르지 않으면 null 로 저장한다 (fixture/Neon 동일).
+      evidence_kind: input.evidence_kind ?? null,
       created_at: nowIso()
     }
     if (isNeonEnabled()) {
-      await query(ctx, `insert into statements (${COLS.statements}) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [row.id, row.session_id, row.round_id, row.group_id, row.author_participant_id, row.body, row.visibility, row.moderation_state, row.created_at])
+      await query(ctx, `insert into statements (${COLS.statements}) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [row.id, row.session_id, row.round_id, row.group_id, row.author_participant_id, row.body, row.visibility, row.moderation_state, row.created_at, row.evidence_kind])
       return row
     }
     getStore().statements = [...getStore().statements, row]

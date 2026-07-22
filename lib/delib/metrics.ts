@@ -4,7 +4,7 @@
 // 여기에 섞지 않고 Post-MVP B 에서 별도 모듈(lib/delib/clustering.ts, landscapeMetrics.ts)로 분리했다.
 // 클러스터링은 순수 추가 레이어이며 아래 consensus/divisive/minority 동작에 영향을 주지 않는다.
 
-import type { VoteValue } from '@/lib/db/schema'
+import type { VoteValue, EvidenceKind } from '@/lib/db/schema'
 
 export type StatementMeta = {
   id: string
@@ -175,6 +175,139 @@ export function computeSnapshotPayload(
     minority,
     groupDeviation: { groups, agreeRateStdDev: stdDev(rates), agreeRateSpread }
   }
+}
+
+// ============================================================
+// Q1 — 근거 유형 자기 태깅 분포 (DELIBERATION-QUALITY-PLAN §2 Q1 / §5 지표)
+// 참가자가 스스로 고른 값만 센다. AI 판정·추론은 일절 없다(오탐 0).
+// 개인 단위 노출 금지: 그룹의 **기여자 수**가 k(기본 3) 미만이면 분포를 억제한다 (§2 Q4 k-익명 규칙 준용).
+// ============================================================
+
+export type EvidenceKindItem = {
+  statementId: string
+  roundId?: string | null
+  groupId?: string | null
+  // 참가자 본인이 고른 값. 미지정(선택 안 함)은 null.
+  evidenceKind?: EvidenceKind | null
+  // 기여자 수 산정용. 운영자 대리입력(null)은 개인이 식별되지 않으므로 **하나의 미상 기여자**로 묶는다
+  // (기여자 수를 부풀리지 않는 보수적 처리 — 억제가 더 자주 걸리는 쪽).
+  authorParticipantId?: string | null
+}
+
+export type EvidenceKindCounts = {
+  experience: number
+  source: number
+  estimate: number
+  // 근거 유형을 고르지 않은 발언 (선택은 선택사항).
+  unspecified: number
+}
+
+export type EvidenceKindDistribution = {
+  // 집계 대상 발언 수 (미지정 포함).
+  total: number
+  // 근거 유형을 실제로 고른 발언 수.
+  tagged: number
+  // 기여자(서로 다른 작성자) 수 — k-익명 판정 근거.
+  contributors: number
+  counts: EvidenceKindCounts
+  // total 대비 비율. total 0 이거나 억제면 전부 0.
+  ratios: EvidenceKindCounts
+  // true 면 기여자 k 미만 → 수치 전부 0 으로 마스킹. 개인 태깅 역추론 차단.
+  suppressed: boolean
+}
+
+export type EvidenceKindBreakdown = {
+  overall: EvidenceKindDistribution
+  byGroup: Array<{ groupId: string; distribution: EvidenceKindDistribution }>
+}
+
+export type EvidenceKindRoundBreakdown = EvidenceKindBreakdown & { roundId: string | null }
+
+const ZERO_COUNTS: EvidenceKindCounts = { experience: 0, source: 0, estimate: 0, unspecified: 0 }
+
+function emptyDistribution(contributors = 0, suppressed = false): EvidenceKindDistribution {
+  return { total: 0, tagged: 0, contributors, counts: { ...ZERO_COUNTS }, ratios: { ...ZERO_COUNTS }, suppressed }
+}
+
+// 기여자 수 — 식별 가능한 작성자는 각각 1, 작성자 미상(대리입력)은 전부 합쳐 1.
+function contributorCount(items: EvidenceKindItem[]): number {
+  const known = new Set<string>()
+  let hasAnonymous = false
+  for (const it of items) {
+    if (it.authorParticipantId) known.add(it.authorParticipantId)
+    else hasAnonymous = true
+  }
+  return known.size + (hasAnonymous ? 1 : 0)
+}
+
+function distributionFor(items: EvidenceKindItem[], kThreshold: number): EvidenceKindDistribution {
+  const contributors = contributorCount(items)
+  if (items.length === 0) return emptyDistribution(0, false)
+  // k-익명 억제: 기여자가 임계 미만이면 개인의 태깅 성향이 그대로 드러난다 → 수치 미노출.
+  if (contributors < kThreshold) return emptyDistribution(contributors, true)
+  const counts: EvidenceKindCounts = { ...ZERO_COUNTS }
+  for (const it of items) {
+    if (it.evidenceKind === 'experience') counts.experience += 1
+    else if (it.evidenceKind === 'source') counts.source += 1
+    else if (it.evidenceKind === 'estimate') counts.estimate += 1
+    else counts.unspecified += 1
+  }
+  const total = items.length
+  const ratios: EvidenceKindCounts = {
+    experience: counts.experience / total,
+    source: counts.source / total,
+    estimate: counts.estimate / total,
+    unspecified: counts.unspecified / total
+  }
+  return {
+    total,
+    tagged: counts.experience + counts.source + counts.estimate,
+    contributors,
+    counts,
+    ratios,
+    suppressed: false
+  }
+}
+
+// 근거 유형 분포 — 전체 + 그룹별. 그룹 미배정(groupId null) 발언은 overall 에만 포함된다.
+export function computeEvidenceKindDistribution(
+  items: EvidenceKindItem[],
+  options: ComputeOptions = {}
+): EvidenceKindBreakdown {
+  const kThreshold = options.kAnonymityThreshold ?? DEFAULT_K_ANONYMITY
+  const byGroupMap = new Map<string, EvidenceKindItem[]>()
+  for (const it of items) {
+    if (it.groupId == null) continue
+    const arr = byGroupMap.get(it.groupId) ?? []
+    arr.push(it)
+    byGroupMap.set(it.groupId, arr)
+  }
+  return {
+    overall: distributionFor(items, kThreshold),
+    byGroup: [...byGroupMap.entries()]
+      .map(([groupId, arr]) => ({ groupId, distribution: distributionFor(arr, kThreshold) }))
+      .sort((a, b) => a.groupId.localeCompare(b.groupId))
+  }
+}
+
+// 라운드별 근거 유형 분포. roundId 미지정 발언은 별도 버킷(null)으로 묶는다.
+export function computeEvidenceKindByRound(
+  items: EvidenceKindItem[],
+  options: ComputeOptions = {}
+): EvidenceKindRoundBreakdown[] {
+  const byRound = new Map<string, EvidenceKindItem[]>()
+  // roundId 가 null 인 항목의 Map 키 sentinel. 실제 roundId(uuid/문자열)와 절대 충돌하지 않는 값.
+  const NULL_KEY = '__no_round__'
+  for (const it of items) {
+    const key = it.roundId ?? NULL_KEY
+    const arr = byRound.get(key) ?? []
+    arr.push(it)
+    byRound.set(key, arr)
+  }
+  return [...byRound.entries()].map(([key, arr]) => ({
+    roundId: key === NULL_KEY ? null : key,
+    ...computeEvidenceKindDistribution(arr, options)
+  }))
 }
 
 // vote 값 배열 → Tally (테스트/집계 helper)

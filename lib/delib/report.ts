@@ -11,7 +11,13 @@
 
 import type { RlsContext } from '@/lib/db/neonHelpers'
 import { sessions, participants, delibRounds, statements, votes, landscape } from '@/lib/db/repo'
-import { computeSnapshotPayload, type StatementMetric, type MinorityFlag } from './metrics'
+import {
+  computeSnapshotPayload,
+  computeEvidenceKindDistribution,
+  type StatementMetric,
+  type MinorityFlag,
+  type EvidenceKindBreakdown
+} from './metrics'
 import {
   explainedVarianceWarning,
   landscapeReasonText,
@@ -95,6 +101,8 @@ export type ReportRound = {
   published: boolean
   // 의견 지형 — 발행 스냅샷에 계산 결과가 있을 때만. 없으면 null(미계산).
   landscape: ReportLandscape | null
+  // Q1: 근거 유형 분포 (참가자 자기 태깅). 개인 단위 없음 — 그룹 기여자 k(3) 미만은 억제.
+  evidenceKind: EvidenceKindBreakdown
 }
 
 // 원자료 섹션의 발언 1건 — statement 별 집계(개인 표 없음). k-익명 억제·익명 마스킹 반영.
@@ -310,6 +318,21 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
     if (!publishedByRound.has(snap.round_id)) publishedByRound.set(snap.round_id, snap)
   }
 
+  // Q1: 근거 유형 분포는 스냅샷에 저장되지 않으므로(발행 여부와 무관하게) 발언에서 직접 집계한다.
+  // 집계 대상은 visible 발언만 — hidden/flagged 는 결과 집계에서 제외하는 기존 원칙(M-1)과 동일.
+  const evidenceKindForRound = (roundId: string): EvidenceKindBreakdown =>
+    computeEvidenceKindDistribution(
+      allStatements
+        .filter((s) => s.round_id === roundId && s.moderation_state === 'visible')
+        .map((s) => ({
+          statementId: s.id,
+          roundId: s.round_id,
+          groupId: s.group_id,
+          evidenceKind: s.evidence_kind,
+          authorParticipantId: s.author_participant_id
+        }))
+    )
+
   const reportRounds: ReportRound[] = rounds.map((r) => {
     const published = publishedByRound.get(r.id)
     if (published) {
@@ -329,7 +352,8 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
         computedAt: published.computed_at,
         publishedAt: published.published_at,
         published: true,
-        landscape: toReportLandscape(payload.landscape, bodyById)
+        landscape: toReportLandscape(payload.landscape, bodyById),
+        evidenceKind: evidenceKindForRound(r.id)
       }
     }
     // 미발행 라운드 — 리포트 생성 시점에 현재 visible 발언으로 재집계 (hidden/flagged 제외, M-1).
@@ -354,7 +378,8 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
       published: false,
       // 의견 지형은 스냅샷 계산 시점(개인 표 행렬 접근 경로)에서만 만들어진다.
       // 리포트 생성 시점 재집계 경로에서는 개인 표를 읽지 않으므로 null(미계산).
-      landscape: null
+      landscape: null,
+      evidenceKind: evidenceKindForRound(r.id)
     }
   })
 

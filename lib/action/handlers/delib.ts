@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { sessions, participants, delibGroups, delibRounds, statements, votes, landscape } from '@/lib/db/repo'
-import { RoundModeEnum, StatementVisibilityEnum, VoteValueEnum, ModerationActionEnum } from '@/lib/db/schema'
+import { RoundModeEnum, StatementVisibilityEnum, VoteValueEnum, ModerationActionEnum, EvidenceKindEnum } from '@/lib/db/schema'
 import { envelopeToCtx } from '../context'
 import { computeSnapshotPayload } from '@/lib/delib/metrics'
 import { computeLandscape, landscapeUnavailable } from '@/lib/delib/landscapeMetrics'
@@ -245,7 +245,11 @@ const SubmitStatementInput = z.object({
   groupId: z.string().optional(),
   authorParticipantId: z.string().optional(),
   body: z.string().min(1),
-  visibility: StatementVisibilityEnum.optional()
+  visibility: StatementVisibilityEnum.optional(),
+  // Q1: 근거 유형 자기 태깅 (DELIBERATION-QUALITY-PLAN §2 Q1). **선택사항** — 미지정이면 null 로 저장.
+  // 판정이 아니라 자기 귀속이므로 서버는 값 검증(enum)만 하고 내용을 해석하지 않는다.
+  // 대리입력(operator) 경로에서도 지정 가능하되 강제하지 않는다.
+  evidenceKind: EvidenceKindEnum.optional()
 })
 
 // C-E: round/group/author 가 대상 세션에 속하는지 + 대상 라운드가 closed 가 아닌지 검증.
@@ -292,7 +296,8 @@ export const submitStatement: Handler = async ({ envelope, trusted }) => {
     group_id: input.groupId ?? null,
     author_participant_id: authorParticipantId,
     body: input.body,
-    visibility: input.visibility ?? 'group'
+    visibility: input.visibility ?? 'group',
+    evidence_kind: input.evidenceKind ?? null
   })
   return { data: { statementId: row.id }, summary: `statement submitted ${row.id}` }
 }

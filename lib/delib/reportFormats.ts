@@ -7,6 +7,7 @@
 import ExcelJS from 'exceljs'
 import type { ExportFile } from '@/lib/export/markdown'
 import type { WorkshopReport, ReportRound, ReportResultItem, ReportRawStatement, ReportLandscape } from './report'
+import type { EvidenceKindBreakdown, EvidenceKindDistribution } from './metrics'
 
 const DISCLOSURE_LABEL: Record<string, string> = {
   participants: '참가자 공개',
@@ -32,6 +33,26 @@ function snapshotSourceText(r: ReportRound): string {
   return r.published
     ? `발행 스냅샷 ${r.snapshotId} · 집계 ${r.computedAt} · 발행 ${r.publishedAt}`
     : `미발행 — 리포트 생성 시점 집계 (${r.computedAt})`
+}
+
+// Q1 근거 유형 분포 — 참가자 자기 태깅 집계. 판정이 아니라 본인 표기임을 납품물에도 명시한다.
+const EVIDENCE_ORDER: Array<{ key: 'experience' | 'source' | 'estimate' | 'unspecified'; label: string }> = [
+  { key: 'experience', label: '경험(직접 겪음)' },
+  { key: 'source', label: '자료·출처(근거 있음)' },
+  { key: 'estimate', label: '추정(제 생각)' },
+  { key: 'unspecified', label: '미지정' }
+]
+
+const EVIDENCE_NOTE =
+  '참가자가 스스로 고른 근거 유형입니다. 시스템이 발언을 판정하지 않으므로 오탐이 없으며, 자기보고이므로 실제 근거 수준과 다를 수 있습니다. ' +
+  '개인 단위는 표기하지 않고 기여자 3명 미만 그룹은 억제합니다.'
+
+const EVIDENCE_SUPPRESSED_TEXT = '표본 부족(기여자 3명 미만) — 개인 태깅 역추론 방지를 위해 미표기'
+
+function evidenceLine(d: EvidenceKindDistribution): string {
+  if (d.suppressed) return EVIDENCE_SUPPRESSED_TEXT
+  if (d.total === 0) return '집계 대상 발언 없음'
+  return EVIDENCE_ORDER.map((o) => `${o.label} ${d.counts[o.key]}건(${pct(d.ratios[o.key])})`).join(' · ') + ` — 총 ${d.total}건`
 }
 
 const CLUSTER_LABELS = ['가', '나', '다', '라', '마']
@@ -91,6 +112,14 @@ function mdLandscape(ls: ReportLandscape | null): string {
         )
         .join('')
   return `${head}- 모든 그룹이 함께 지지한 의견(GIC 상위)\n${gic}- 그룹별 대표 의견\n${reps}${mdAvoided(ls)}`
+}
+
+function mdEvidence(e: EvidenceKindBreakdown): string {
+  const head = `- 라운드 전체: ${evidenceLine(e.overall)}\n`
+  const groups = e.byGroup.length === 0
+    ? '  - (그룹 배정된 발언 없음)\n'
+    : e.byGroup.map((g) => `  - 그룹 \`${g.groupId}\`: ${evidenceLine(g.distribution)}\n`).join('')
+  return `${head}- 그룹별\n${groups}`
 }
 
 // ============================================================
@@ -157,7 +186,8 @@ export function planDelibMarkdownExport(report: WorkshopReport): ExportFile[] {
               `### 합의점 (consensus)\n${mdResultList(r.consensus, 'consensus')}\n\n` +
               `### 쟁점 (divisive)\n${mdResultList(r.divisive, 'divisive')}\n\n` +
               `### 소수의견 (minority)\n${mdResultList(r.minority, 'minority')}\n\n` +
-              `### 의견 지형 (opinion landscape)\n${mdLandscape(r.landscape)}`
+              `### 의견 지형 (opinion landscape)\n${mdLandscape(r.landscape)}\n` +
+              `### 근거 유형 분포 (참가자 자기 태깅)\n> ${EVIDENCE_NOTE}\n\n${mdEvidence(r.evidenceKind)}`
             )
           })
           .join('\n'))
@@ -282,6 +312,16 @@ function htmlLandscape(ls: ReportLandscape | null): string {
   return `${head}<h5>모든 그룹이 함께 지지한 의견 (GIC 상위)</h5>${gic}<h5>그룹별 대표 의견</h5>${reps}${htmlAvoided(ls)}`
 }
 
+function htmlEvidence(e: EvidenceKindBreakdown): string {
+  const rows = [
+    `<li><div class="body">라운드 전체</div><div class="meta">${esc(evidenceLine(e.overall))}</div></li>`,
+    ...e.byGroup.map(
+      (g) => `<li><div class="body">그룹 <code>${esc(g.groupId)}</code></div><div class="meta">${esc(evidenceLine(g.distribution))}</div></li>`
+    )
+  ].join('')
+  return `<p class="note">${esc(EVIDENCE_NOTE)}</p><ul class="results">${rows}</ul>`
+}
+
 export function planDelibHtmlExport(report: WorkshopReport): string {
   const o = report.overview
   const p = report.procedure
@@ -299,7 +339,8 @@ export function planDelibHtmlExport(report: WorkshopReport): string {
             `<h4>합의점 (consensus)</h4>${htmlResultList(r.consensus, 'consensus')}` +
             `<h4>쟁점 (divisive)</h4>${htmlResultList(r.divisive, 'divisive')}` +
             `<h4>소수의견 (minority)</h4>${htmlResultList(r.minority, 'minority')}` +
-            `<h4>의견 지형 (opinion landscape)</h4>${htmlLandscape(r.landscape)}</section>`
+            `<h4>의견 지형 (opinion landscape)</h4>${htmlLandscape(r.landscape)}` +
+            `<h4>근거 유형 분포 (참가자 자기 태깅)</h4>${htmlEvidence(r.evidenceKind)}</section>`
           )
         })
         .join('')
@@ -518,7 +559,40 @@ export async function planDelibXlsxBuffer(report: WorkshopReport): Promise<Buffe
     addAvoided()
   }
 
-  // 시트 4: moderation 내역
+  // 시트 4: 근거 유형 분포 (Q1 — 참가자 자기 태깅). 개인 단위 행 없음, 억제 그룹은 사유만.
+  const evi = wb.addWorksheet('근거 유형 분포')
+  evi.columns = [
+    { header: '라운드', key: 'round', width: 8 },
+    { header: '범위', key: 'scope', width: 18 },
+    { header: '경험', key: 'experience', width: 10 },
+    { header: '자료·출처', key: 'source', width: 12 },
+    { header: '추정', key: 'estimate', width: 10 },
+    { header: '미지정', key: 'unspecified', width: 10 },
+    { header: '총 발언', key: 'total', width: 10 },
+    { header: '비고', key: 'note', width: 46 }
+  ]
+  evi.addRow({ round: '-', scope: '안내', note: EVIDENCE_NOTE })
+  for (const r of report.rounds) {
+    const push = (scope: string, d: EvidenceKindDistribution) => {
+      if (d.suppressed) {
+        evi.addRow({ round: r.roundIndex, scope, experience: '', source: '', estimate: '', unspecified: '', total: '', note: EVIDENCE_SUPPRESSED_TEXT })
+        return
+      }
+      evi.addRow({
+        round: r.roundIndex, scope,
+        experience: `${d.counts.experience} (${pct(d.ratios.experience)})`,
+        source: `${d.counts.source} (${pct(d.ratios.source)})`,
+        estimate: `${d.counts.estimate} (${pct(d.ratios.estimate)})`,
+        unspecified: `${d.counts.unspecified} (${pct(d.ratios.unspecified)})`,
+        total: d.total,
+        note: d.total === 0 ? '집계 대상 발언 없음' : ''
+      })
+    }
+    push('라운드 전체', r.evidenceKind.overall)
+    for (const g of r.evidenceKind.byGroup) push(`그룹 ${g.groupId}`, g.distribution)
+  }
+
+  // 시트 5: moderation 내역
   const mod = wb.addWorksheet('moderation')
   mod.columns = [
     { header: '시각', key: 'createdAt', width: 26 },
@@ -531,7 +605,7 @@ export async function planDelibXlsxBuffer(report: WorkshopReport): Promise<Buffe
     mod.addRow({ createdAt: e.createdAt, statementId: e.statementId, action: e.action, actorRole: e.actorRole, reason: e.reason || '-' })
   }
 
-  // 시트 5: 원자료 (statement 별 집계 — k-익명 억제 반영)
+  // 시트 6: 원자료 (statement 별 집계 — k-익명 억제 반영)
   const raw = wb.addWorksheet('원자료')
   raw.columns = [
     { header: 'statementId', key: 'statementId', width: 16 },

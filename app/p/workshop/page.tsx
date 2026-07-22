@@ -7,8 +7,9 @@ import { swrFetcher } from '@/lib/api/fetcher'
 import { invoke } from '@/lib/util/envelope'
 import { Card, CardHeader, Badge, Button, Textarea, PageHeader } from '@/components/ui/primitives'
 import { VoteControls } from '@/components/delib/VoteControls'
+import { EvidenceKindControls } from '@/components/delib/EvidenceKindControls'
 import { RecordingBanner } from '@/components/delib/RecordingBanner'
-import type { VoteValue } from '@/lib/db/schema'
+import type { VoteValue, EvidenceKind } from '@/lib/db/schema'
 
 type StatementCard = {
   id: string
@@ -43,6 +44,8 @@ export default function ParticipantWorkshopPage() {
   const router = useRouter()
   const { data, mutate } = useSWR<Data>('/api/data/delib/participant-view', swrFetcher, { refreshInterval: POLL_MS })
   const [body, setBody] = useState('')
+  // Q1: 근거 유형 자기 태깅. 기본값 없음(null) — 강제하지 않는다.
+  const [evidenceKind, setEvidenceKind] = useState<EvidenceKind | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   // N2: statement 별 투표 진행 중 표시 — 연타/레이스 방지(pending 중 재클릭 disable).
@@ -74,7 +77,15 @@ export default function ParticipantWorkshopPage() {
         action: 'delib.submit_statement',
         role: 'participant',
         scope: { sessionId },
-        input: { sessionId, roundId: activeRound?.id, groupId: data?.myGroupId ?? undefined, body: body.trim(), visibility: 'group' }
+        input: {
+          sessionId,
+          roundId: activeRound?.id,
+          groupId: data?.myGroupId ?? undefined,
+          body: body.trim(),
+          visibility: 'group',
+          // 미선택이면 아예 보내지 않는다 (서버에서 null 로 저장).
+          evidenceKind: evidenceKind ?? undefined
+        }
       })
       if (!res?.ok) {
         setError(`의견 제출에 실패했습니다: ${res?.error ?? res?.status ?? '알 수 없는 오류'}`)
@@ -82,6 +93,7 @@ export default function ParticipantWorkshopPage() {
       }
       setError(null)
       setBody('')
+      setEvidenceKind(null)
       await mutate()
       setStatus('의견이 제출되었습니다.')
     } catch {
@@ -180,6 +192,18 @@ export default function ParticipantWorkshopPage() {
               placeholder={canSubmit ? '이 라운드에 대한 의견을 적어주세요' : '라운드가 시작되면 의견을 낼 수 있습니다'}
               disabled={!canSubmit || busy}
             />
+            {/* Q1: 근거 유형 자기 태깅 — 선택사항, 기본값 없음. 판정이 아니라 본인 표기다. */}
+            <div className="pt-1">
+              <div className="text-xs text-textDim mb-1">
+                이 주장의 근거 <span className="text-textMute">(선택사항 — 고르지 않아도 제출됩니다)</span>
+              </div>
+              <EvidenceKindControls
+                idBase="evidence-kind"
+                value={evidenceKind}
+                onChange={setEvidenceKind}
+                disabled={!canSubmit || busy}
+              />
+            </div>
             <div className="flex justify-end">
               <Button variant="accent" onClick={submitStatement} disabled={!canSubmit || busy || !body.trim()}>
                 {busy ? '제출 중' : '의견 제출'}

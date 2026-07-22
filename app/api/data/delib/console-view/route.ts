@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { sessions, delibRounds, delibGroups, participants, statements, votes, landscape } from '@/lib/db/repo'
 import { adminContext } from '@/lib/db/neonHelpers'
 import { toConsoleCard } from '@/lib/delib/views'
+import { computeEvidenceKindByRound } from '@/lib/delib/metrics'
 import { readRecordingConsent } from '@/lib/action/handlers/delib'
 
 // 퍼실리테이터 콘솔 데이터 — 그룹별 현황, moderation 큐, 투표 진행률.
@@ -62,6 +63,21 @@ export async function GET(req: Request) {
   const expectedVotes = parts.length * visibleCards.length
   const voteProgress = expectedVotes > 0 ? Math.min(1, totalVotes / expectedVotes) : 0
 
+  // Q1: 근거 유형 분포 — 라운드별·그룹 단위 집계만 서버에서 만들어 내려보낸다.
+  // 개별 발언의 evidence_kind 는 카드에 싣지 않는다 (개인 단위 노출 금지). 기여자 k(3) 미만 그룹은 억제됨.
+  // 집계 대상은 visible 발언만 (hidden/flagged 제외 — 기존 M-1 원칙과 동일).
+  const evidenceByRound = computeEvidenceKindByRound(
+    allStatements
+      .filter((s) => s.moderation_state === 'visible')
+      .map((s) => ({
+        statementId: s.id,
+        roundId: s.round_id,
+        groupId: s.group_id,
+        evidenceKind: s.evidence_kind,
+        authorParticipantId: s.author_participant_id
+      }))
+  )
+
   const activeRound = rounds.find((r) => r.status === 'active') ?? null
   const snaps = await landscape.list(ctx, sessionId)
 
@@ -75,6 +91,8 @@ export async function GET(req: Request) {
     statements: cards,
     moderationQueue,
     voteProgress: { totalVotes, expectedVotes, ratio: voteProgress },
+    // Q1 근거 유형 분포 (라운드별 · 그룹 단위, k-익명 억제 반영). 프로젝터에는 내려보내지 않는다.
+    evidenceByRound,
     // 녹음·전사 동의 상태 — 콘솔 "녹음 중" 상시 배너 조건 (transcript-architecture §4).
     recording: readRecordingConsent(session.metadata),
     snapshots: snaps.map((s) => ({ id: s.id, roundId: s.round_id, computedAt: s.computed_at, publishedAt: s.published_at }))
