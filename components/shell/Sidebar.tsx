@@ -24,6 +24,12 @@ const TOOL_NAV: NavItem[] = [
   { href: '/today/export', label: '내보내기' }
 ]
 
+// 숙의 워크숍(delib) — 기존 강의(liveops) 라우트와 분리된 신규 섹션.
+const DELIB_NAV: NavItem[] = [
+  { href: '/workshops', label: '워크숍 목록' },
+  { href: '/workshops/new', label: '새 워크숍' }
+]
+
 const ADMIN_NAV: NavItem[] = [
   { href: '/sessions', label: '세션 아카이브' },
   { href: '/sessions/new', label: '새 세션' },
@@ -33,7 +39,7 @@ const ADMIN_NAV: NavItem[] = [
   { href: '/settings', label: '설정' }
 ]
 
-const ALL_NAV: NavItem[] = [...CORE_NAV, ...CLASS_NAV, ...TOOL_NAV, ...ADMIN_NAV]
+const ALL_NAV: NavItem[] = [...CORE_NAV, ...CLASS_NAV, ...TOOL_NAV, ...DELIB_NAV, ...ADMIN_NAV]
 
 type Mode = 'fixture' | 'supabase' | 'neon'
 
@@ -117,6 +123,7 @@ export function Sidebar({ mode }: { mode: Mode }) {
           <NavGroup title="지금" items={CORE_NAV} activeHref={activeHref} />
           <NavGroup title="수업 운영" items={CLASS_NAV} activeHref={activeHref} collapsible />
           <NavGroup title="도구" items={TOOL_NAV} activeHref={activeHref} collapsible />
+          <NavGroup title="숙의 워크숍" items={DELIB_NAV} activeHref={activeHref} collapsible />
           <NavGroup title="관리" items={ADMIN_NAV} activeHref={activeHref} />
         </nav>
         <ModeBadge mode={mode} />

@@ -1,0 +1,443 @@
+'use client'
+
+import { use, useMemo, useState } from 'react'
+import useSWR from 'swr'
+import Link from 'next/link'
+import { swrFetcher } from '@/lib/api/fetcher'
+import { invoke } from '@/lib/util/envelope'
+import { Badge, Button, Card, CardHeader, Input, PageHeader, Select, Textarea } from '@/components/ui/primitives'
+import { VoteControls } from '@/components/delib/VoteControls'
+import type { VoteValue } from '@/lib/db/schema'
+
+type Member = { participantId: string; alias: string }
+type GroupView = { id: string; label: string; topic: string; members: Member[] }
+type Round = { id: string; round_index: number; title: string; mode: string; status: string }
+type Tally = { agree: number; disagree: number; pass: number }
+type StatementCard = {
+  id: string
+  body: string
+  groupId: string | null
+  roundId: string | null
+  moderationState: 'visible' | 'flagged' | 'hidden'
+  createdAt: string
+  tally: Tally
+  total: number
+}
+type ConsoleData = {
+  ok: boolean
+  error?: string
+  session?: { id: string; title: string; date: string }
+  rounds?: Round[]
+  activeRound?: Round | null
+  groups?: GroupView[]
+  participantCount?: number
+  statements?: StatementCard[]
+  moderationQueue?: StatementCard[]
+  voteProgress?: { totalVotes: number; expectedVotes: number; ratio: number }
+  snapshots?: { id: string; roundId: string | null; computedAt: string; publishedAt: string | null }[]
+}
+
+// 콘솔 폴링 2~5초 (§3). 운영 조작 후엔 mutate()로 즉시 반영.
+const POLL_MS = 3000
+
+export default function WorkshopConsolePage({ params }: { params: Promise<{ id: string }> }) {
+  const { id: sessionId } = use(params)
+  const { data, mutate } = useSWR<ConsoleData>(`/api/data/delib/console-view?sessionId=${encodeURIComponent(sessionId)}`, swrFetcher, { refreshInterval: POLL_MS })
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const allMembers = useMemo(() => {
+    const out: Member[] = []
+    for (const g of data?.groups ?? []) out.push(...g.members)
+    return out
+  }, [data])
+
+  async function run(action: string, input: unknown): Promise<boolean> {
+    setBusy(true)
+    try {
+      const res = await invoke({ action, role: 'instructor', scope: { sessionId }, input })
+      if (!res?.ok) {
+        setError(`${action} 실패: ${res?.error ?? res?.status ?? '알 수 없는 오류'}`)
+        return false
+      }
+      setError(null)
+      await mutate()
+      return true
+    } catch {
+      setError(`${action} 요청 중 오류가 발생했습니다.`)
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (data?.ok === false) {
+    return (
+      <div className="p-6">
+        <Card className="p-6 text-sm text-danger">콘솔 데이터를 불러오지 못했습니다: {data.error ?? '알 수 없는 오류'}</Card>
+      </div>
+    )
+  }
+
+  const progress = data?.voteProgress
+  const ratioPct = progress ? Math.round(progress.ratio * 100) : 0
+
+  return (
+    <div className="p-6 space-y-4 max-w-6xl">
+      <PageHeader
+        title="퍼실리테이터 콘솔"
+        desc={data?.session ? `${data.session.title} · ${data.session.date}` : '불러오는 중...'}
+        right={
+          <div className="flex flex-wrap items-center gap-2">
+            {data?.activeRound ? <Badge tone="accent">라운드 {data.activeRound.round_index} 진행중</Badge> : <Badge tone="neutral">라운드 없음</Badge>}
+            <Badge tone="info">참가자 {data?.participantCount ?? 0}</Badge>
+            <Link href={`/workshops/${encodeURIComponent(sessionId)}/projector`} target="_blank"><Button size="sm">프로젝터 열기</Button></Link>
+          </div>
+        }
+      />
+
+      {error ? <div role="alert" className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div> : null}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <RoundControl sessionId={sessionId} rounds={data?.rounds ?? []} activeRound={data?.activeRound ?? null} busy={busy} onStart={(input) => run('delib.start_round', input)} />
+        <ProjectorPublish sessionId={sessionId} snapshots={data?.snapshots ?? []} activeRoundId={data?.activeRound?.id ?? null} busy={busy} onDone={() => mutate()} onError={setError} />
+      </div>
+
+      {/* 투표 진행률 */}
+      <Card>
+        <CardHeader title="투표 진행률" hint={progress ? `${progress.totalVotes}/${progress.expectedVotes} 표` : undefined} />
+        <div className="p-4">
+          <div className="h-3 w-full rounded-full bg-surfaceAlt overflow-hidden" role="progressbar" aria-valuenow={ratioPct} aria-valuemin={0} aria-valuemax={100} aria-label="투표 진행률">
+            <div className="h-full bg-accent transition-all" style={{ width: `${ratioPct}%` }} />
+          </div>
+          <div className="mt-1 text-xs text-textDim">{ratioPct}%</div>
+        </div>
+      </Card>
+
+      {/* 그룹 보드 (좌석맵 재해석 — 그룹별 멤버 카드) */}
+      <GroupBoard groups={data?.groups ?? []} />
+
+      {/* moderation 큐 */}
+      <ModerationQueue queue={data?.moderationQueue ?? []} busy={busy} onModerate={(statementId, action) => run('delib.moderate_statement', { statementId, action })} />
+
+      {/* 전체 발언 + moderation 조작 */}
+      <StatementList statements={data?.statements ?? []} busy={busy} onModerate={(statementId, action) => run('delib.moderate_statement', { statementId, action })} />
+
+      {/* 오프라인 폴백 — 대리 입력 (§7-7) */}
+      <ProxyInput
+        sessionId={sessionId}
+        members={allMembers}
+        statements={(data?.statements ?? []).filter((s) => s.moderationState === 'visible')}
+        activeRoundId={data?.activeRound?.id ?? null}
+        busy={busy}
+        onSubmit={(input) => run('delib.submit_statement', input)}
+        onVote={(input) => run('delib.vote_statement', input)}
+      />
+    </div>
+  )
+}
+
+function RoundControl({
+  sessionId,
+  rounds,
+  activeRound,
+  busy,
+  onStart
+}: {
+  sessionId: string
+  rounds: Round[]
+  activeRound: Round | null
+  busy: boolean
+  onStart: (input: unknown) => Promise<boolean>
+}) {
+  const nextIndex = rounds.reduce((m, r) => Math.max(m, r.round_index), -1) + 1
+  const [title, setTitle] = useState('')
+  const [mode, setMode] = useState<'plenary' | 'breakout'>('plenary')
+
+  return (
+    <Card>
+      <CardHeader title="라운드 제어" hint={activeRound ? `현재: 라운드 ${activeRound.round_index}` : '진행 중 없음'} />
+      <div className="p-4 space-y-3">
+        <p className="text-xs text-textMute">
+          새 라운드를 시작하면 현재 진행 중인 라운드는 자동으로 종료됩니다(세션당 활성 라운드 1개).
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <Input placeholder={`라운드 ${nextIndex} 제목`} value={title} onChange={(e) => setTitle(e.target.value)} />
+          <Select value={mode} onChange={(e) => setMode(e.target.value as 'plenary' | 'breakout')}>
+            <option value="plenary">전체(plenary)</option>
+            <option value="breakout">분임(breakout)</option>
+          </Select>
+        </div>
+        <div className="flex justify-end">
+          <Button
+            variant="accent"
+            disabled={busy}
+            onClick={async () => {
+              const ok = await onStart({ sessionId, roundIndex: nextIndex, title, mode })
+              if (ok) setTitle('')
+            }}
+          >
+            라운드 {nextIndex} 시작
+          </Button>
+        </div>
+        <ul className="divide-y divide-border border-t border-border">
+          {rounds.map((r) => (
+            <li key={r.id} className="py-2 flex items-center gap-2 text-sm">
+              <Badge tone={r.status === 'active' ? 'accent' : r.status === 'closed' ? 'neutral' : 'info'}>{r.status}</Badge>
+              <span className="text-textDim">라운드 {r.round_index}</span>
+              <span className="truncate">{r.title || '(제목 없음)'}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </Card>
+  )
+}
+
+function ProjectorPublish({
+  sessionId,
+  snapshots,
+  activeRoundId,
+  busy,
+  onDone,
+  onError
+}: {
+  sessionId: string
+  snapshots: { id: string; publishedAt: string | null }[]
+  activeRoundId: string | null
+  busy: boolean
+  onDone: () => void
+  onError: (m: string) => void
+}) {
+  const [working, setWorking] = useState(false)
+  const publishedCount = snapshots.filter((s) => s.publishedAt != null).length
+
+  async function computeAndPublish() {
+    setWorking(true)
+    try {
+      const computed = await invoke({
+        action: 'delib.compute_snapshot',
+        role: 'instructor',
+        scope: { sessionId },
+        input: { sessionId, roundId: activeRoundId ?? undefined }
+      })
+      if (!computed?.ok) throw new Error(computed?.error ?? '스냅샷 계산 실패')
+      const snapshotId = computed.data?.snapshotId
+      if (typeof snapshotId !== 'string') throw new Error('스냅샷 ID 누락')
+      const published = await invoke({
+        action: 'delib.publish_snapshot',
+        role: 'instructor',
+        scope: { sessionId },
+        input: { snapshotId }
+      })
+      if (!published?.ok) throw new Error(published?.error ?? '스냅샷 발행 실패')
+      onDone()
+    } catch (e) {
+      onError(e instanceof Error ? e.message : '스냅샷 발행 실패')
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader title="프로젝터 발행" hint={`발행된 스냅샷 ${publishedCount}건`} />
+      <div className="p-4 space-y-3">
+        <p className="text-xs text-textMute">
+          현재 집계를 스냅샷으로 계산해 프로젝터 결과판에 발행합니다. 개인 표는 포함되지 않고 집계·랭킹만 공개됩니다.
+        </p>
+        <div className="flex justify-end">
+          <Button variant="accent" disabled={busy || working} onClick={computeAndPublish}>
+            {working ? '발행 중' : '결과 계산 & 발행'}
+          </Button>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+function GroupBoard({ groups }: { groups: GroupView[] }) {
+  return (
+    <Card>
+      <CardHeader title="그룹 보드" hint={`${groups.length}개 그룹`} />
+      <div className="p-4">
+        {groups.length === 0 ? (
+          <p className="text-sm text-textDim">배정된 그룹이 없습니다.</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {groups.map((g) => (
+              <div key={g.id} className="rounded-md border border-border bg-bg p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium text-text">{g.label}</span>
+                  <Badge tone="neutral">{g.members.length}명</Badge>
+                </div>
+                {g.topic ? <div className="text-xs text-textMute mt-0.5 truncate">{g.topic}</div> : null}
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {g.members.map((m) => (
+                    <span key={m.participantId} className="inline-flex items-center rounded bg-surfaceAlt px-1.5 py-0.5 text-[11px] text-textDim border border-border">
+                      {m.alias}
+                    </span>
+                  ))}
+                  {g.members.length === 0 ? <span className="text-[11px] text-textMute">멤버 없음</span> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+type ModAction = 'flag' | 'hide' | 'restore'
+
+function moderationButtons(state: StatementCard['moderationState']): { action: ModAction; label: string; variant: 'default' | 'danger' | 'accent' }[] {
+  // 전이표(repo)와 일치: visible→flag/hide, flagged→hide/restore, hidden→restore.
+  if (state === 'visible') return [{ action: 'flag', label: '신고', variant: 'default' }, { action: 'hide', label: '숨김', variant: 'danger' }]
+  if (state === 'flagged') return [{ action: 'hide', label: '숨김', variant: 'danger' }, { action: 'restore', label: '복원', variant: 'accent' }]
+  return [{ action: 'restore', label: '복원', variant: 'accent' }]
+}
+
+function ModerationQueue({
+  queue,
+  busy,
+  onModerate
+}: {
+  queue: StatementCard[]
+  busy: boolean
+  onModerate: (statementId: string, action: ModAction) => void
+}) {
+  return (
+    <Card>
+      <CardHeader title="Moderation 큐" hint={`${queue.length}건`} />
+      <ul className="divide-y divide-border">
+        {queue.length === 0 ? <li className="px-4 py-6 text-sm text-textDim text-center">신고/숨김 대기 항목이 없습니다.</li> : null}
+        {queue.map((s) => (
+          <li key={s.id} className="px-4 py-3 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <Badge tone={s.moderationState === 'flagged' ? 'warn' : 'danger'}>{s.moderationState === 'flagged' ? '신고됨' : '숨김'}</Badge>
+              <p className="text-sm text-text break-words mt-1">{s.body}</p>
+            </div>
+            <div className="flex shrink-0 gap-1">
+              {moderationButtons(s.moderationState).map((b) => (
+                <Button key={b.action} size="sm" variant={b.variant} disabled={busy} onClick={() => onModerate(s.id, b.action)}>{b.label}</Button>
+              ))}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  )
+}
+
+function StatementList({
+  statements,
+  busy,
+  onModerate
+}: {
+  statements: StatementCard[]
+  busy: boolean
+  onModerate: (statementId: string, action: ModAction) => void
+}) {
+  return (
+    <Card>
+      <CardHeader title="전체 발언" hint={`${statements.length}건`} />
+      <ul className="divide-y divide-border">
+        {statements.length === 0 ? <li className="px-4 py-6 text-sm text-textDim text-center">아직 발언이 없습니다.</li> : null}
+        {statements.map((s) => (
+          <li key={s.id} className="px-4 py-3 space-y-2">
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-sm text-text break-words min-w-0">{s.body}</p>
+              <div className="flex shrink-0 gap-1">
+                {moderationButtons(s.moderationState).map((b) => (
+                  <Button key={b.action} size="sm" variant={b.variant} disabled={busy} onClick={() => onModerate(s.id, b.action)}>{b.label}</Button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center gap-3 text-xs text-textDim">
+              <span>찬 {s.tally.agree}</span>
+              <span>반 {s.tally.disagree}</span>
+              <span>유보 {s.tally.pass}</span>
+              <span className="text-textMute">· 총 {s.total}표</span>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  )
+}
+
+function ProxyInput({
+  sessionId,
+  members,
+  statements,
+  activeRoundId,
+  busy,
+  onSubmit,
+  onVote
+}: {
+  sessionId: string
+  members: Member[]
+  statements: StatementCard[]
+  activeRoundId: string | null
+  busy: boolean
+  onSubmit: (input: unknown) => Promise<boolean>
+  onVote: (input: unknown) => Promise<boolean>
+}) {
+  const [participantId, setParticipantId] = useState('')
+  const [body, setBody] = useState('')
+
+  return (
+    <Card>
+      <CardHeader title="오프라인 대리 입력" hint="종이 제출을 운영자가 대신 입력" />
+      <div className="p-4 space-y-3">
+        <p className="text-xs text-textMute">
+          폰이 없는 참가자의 종이 제출을 대신 입력합니다. 운영자 신원(instructor)으로 기록되어 감사 로그에서 대리입력으로 구분됩니다.
+        </p>
+        <label className="block">
+          <span className="block text-xs text-textDim mb-1">대상 참가자</span>
+          <Select value={participantId} onChange={(e) => setParticipantId(e.target.value)}>
+            <option value="">참가자 선택</option>
+            {members.map((m) => <option key={m.participantId} value={m.participantId}>{m.alias}</option>)}
+          </Select>
+        </label>
+
+        <div className="space-y-2">
+          <label htmlFor="proxy-statement" className="block text-xs text-textDim">의견 대리 제출</label>
+          <Textarea id="proxy-statement" rows={2} value={body} onChange={(e) => setBody(e.target.value)} placeholder="종이에 적힌 의견을 입력" disabled={busy} />
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              variant="accent"
+              disabled={busy || !participantId || !body.trim()}
+              onClick={async () => {
+                const ok = await onSubmit({ sessionId, roundId: activeRoundId ?? undefined, authorParticipantId: participantId, body: body.trim(), visibility: 'group' })
+                if (ok) setBody('')
+              }}
+            >
+              대리 제출
+            </Button>
+          </div>
+        </div>
+
+        {statements.length > 0 && participantId ? (
+          <div className="space-y-2">
+            <div className="text-xs text-textDim">의견별 대리 투표</div>
+            <ul className="divide-y divide-border border-t border-border">
+              {statements.map((s) => (
+                <li key={s.id} className="py-2 space-y-1">
+                  <p className="text-sm text-text break-words">{s.body}</p>
+                  <VoteControls
+                    idBase={`proxy-vote-${s.id}`}
+                    onVote={(v: VoteValue) => onVote({ statementId: s.id, participantId, vote: v })}
+                    disabled={busy}
+                  />
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+    </Card>
+  )
+}

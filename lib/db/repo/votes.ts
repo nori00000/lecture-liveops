@@ -69,6 +69,16 @@ export const votes = {
     }
     return out
   },
+  // 참가자 본인의 표만 조회 — participant-view 에서 "내가 어떻게 투표했나"를 되돌려주기 위한 self-lookup.
+  // 거버넌스 §7-2 위반 아님: 반드시 서버가 인증된(쿠키) 참가자 본인의 participantId 만 넘겨야 한다.
+  // 운영자 경로에서 임의 participantId 로 호출하면 개인 표 노출이 되므로 절대 그렇게 쓰지 말 것.
+  async listByParticipant(ctx: RlsContext, participantId: string): Promise<StatementVote[]> {
+    if (isNeonEnabled()) {
+      const rows = await query(ctx, `select ${COLS.statement_votes} from statement_votes where participant_id = $1`, [participantId])
+      return rows.map(toVote)
+    }
+    return getStore().statement_votes.filter((v) => v.participant_id === participantId)
+  },
   // 개인 표 원자료 raw 조회 — admin 전용 (거버넌스 §7-2, N-3). Neon RLS(ax_delib_votes_admin_read)와
   // 동일 경계를 fixture 에서도 명시 강제한다. 집계는 tallyByStatements(delib_vote_tally)만 사용할 것.
   async listByStatement(ctx: RlsContext, statementId: string): Promise<StatementVote[]> {

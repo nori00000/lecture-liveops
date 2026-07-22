@@ -45,7 +45,9 @@ export function operatorCookieOptions() {
 // 게이트 보호 대상 prefix. /api/data/participant는 참가자 세션이 자체 보호.
 const PROTECTED_PREFIXES = ['/today', '/companies', '/courses', '/dates', '/settings']
 const PROTECTED_API_PREFIX = '/api/data'
-const EXEMPT_API_PREFIXES = ['/api/data/participant']
+// 참가자 자체 세션 쿠키로 보호되는 읽기 경로는 operator 게이트에서 제외한다.
+// /api/data/delib/participant-view 는 참가자 신원 쿠키를 자체 검증하므로 operator 키가 없어도 접근 가능해야 한다.
+const EXEMPT_API_PREFIXES = ['/api/data/participant', '/api/data/delib/participant-view']
 const PROTECTED_API_PATHS = new Set(['/api/timeline-sync'])
 
 export function isOperatorProtectedPath(pathname: string): boolean {
