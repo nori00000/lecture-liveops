@@ -28,7 +28,7 @@ import {
   type PermutationTest,
   type SnapshotPayloadWithLandscape
 } from './landscapeMetrics'
-import type { RoundMode, RoundStatus, ModerationState, ModerationAction, Role, LandscapeSnapshot, AiObservationKind } from '@/lib/db/schema'
+import type { RoundMode, RoundStatus, ModerationState, ModerationAction, ModerationActorRole, Role, LandscapeSnapshot, AiObservationKind } from '@/lib/db/schema'
 
 // Q2: 리포트에 실리는 "검토가 필요한 주장" 1건 (DELIBERATION-QUALITY-PLAN §2 Q2).
 // **퍼실리테이터가 승인(approved)한 것만** 여기에 들어온다 — pending/rejected 는 영구 제외.
@@ -44,6 +44,9 @@ export type ReportAiObservation = {
   // 원 발언 본문 (숨김 처리된 발언은 애초에 이 섹션에 오지 않는다).
   statementBody: string
   reviewedAt: string | null
+  // §7-5 증빙: 승인 주체. 서버가 확인할 수 있는 것은 "운영자 권한으로 승인됨"까지이므로
+  // 개인 신원이 아니라 역할 상수('operator')가 저장된다 (M3).
+  reviewedBy: string | null
   provider: string
 }
 
@@ -142,7 +145,7 @@ export type ReportRawStatement = {
 export type ReportModerationEvent = {
   statementId: string
   action: ModerationAction
-  actorRole: Role
+  actorRole: ModerationActorRole
   reason: string
   createdAt: string
 }
@@ -295,6 +298,41 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
   // 집계는 tally 함수(개인 표 미노출)로만. 전체 발언에 대해 한 번에.
   const tallies = await votes.tallyByStatements(ctx, allStatements.map((s) => s.id))
 
+  // ── Q2: 승인된 검토 후보. AI 는 크리티컬 패스가 아니다 —
+  // 조회가 실패해도 리포트는 AI 섹션 없이 정상 발행된다 (§3).
+  // **원자료(rawData)보다 먼저 조회한다** — C1: AI 섹션 유무가 원자료 작성자 표기를 바꾸기 때문이다.
+  const statementById = new Map(allStatements.map((s) => [s.id, s] as const))
+  let reportAiObservations: ReportAiObservation[] = []
+  try {
+    const approved = await aiObservations.list(ctx, sessionId, { status: 'approved' })
+    reportAiObservations = approved.flatMap((o) => {
+      const s = statementById.get(o.statement_id)
+      // Codex6: 승인 후 상태가 바뀐 발언은 싣지 않는다. hidden 뿐 아니라 flagged(신고됨)도 제외 —
+      // 집계·결과 섹션이 visible 만 쓰는 원칙(M-1)과 AI 섹션도 일치시킨다.
+      if (!s || s.moderation_state !== 'visible') return []
+      return [{
+        observationId: o.id,
+        statementId: o.statement_id,
+        roundId: o.round_id ?? s.round_id,
+        kind: o.kind,
+        body: o.body,
+        suggestedQuestion: o.suggested_question,
+        statementBody: s.body,
+        reviewedAt: o.reviewed_at,
+        reviewedBy: o.reviewed_by,
+        provider: o.provider
+      }]
+    })
+  } catch (e) {
+    console.error(`[delib-report] ai observations unavailable: ${e instanceof Error ? e.name : 'unknown'}`)
+  }
+
+  // C1: AI 섹션이 1건이라도 있으면 원자료 작성자 표기를 **익명 모드와 무관하게** '익명'으로 강제한다.
+  // 근거: N<12 세션은 익명 모드를 켜지 않는 것이 정상 경로라 authorAlias 가 실명이다. 같은 zip 안에
+  //       04-검토가-필요한-주장(statementId 노출)과 03-원자료(statementId ↔ 실명)가 함께 납품되므로
+  //       "누구의 발언이 근거 확인 대상인가"가 조인 한 번으로 인쇄된다. traceability 는 statementId 로 유지된다.
+  const forceAnonymousRaw = reportAiObservations.length > 0
+
   // ── 원자료 섹션: 전체 발언(moderation 상태 포함) statement 별 집계 + k-익명 억제.
   // computeSnapshotPayload 의 suppressed 를 재사용해 리포트에서도 동일한 "표본 부족" 판정을 쓴다.
   const rawPayload = computeSnapshotPayload(
@@ -307,7 +345,7 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
     // F4: 익명 모드면 작성자 컬럼을 '익명'으로 고정해 반복 핸들(anon_handle)·participantId 로 작성자별 발언을 연결하지 못하게 한다.
     //     운영자 대리 발언은 원래 author 가 없으므로 그대로 '(운영자 대리)'.
     const authorAlias = s.author_participant_id
-      ? (anonymousMode ? '익명' : (displayAliasById.get(s.author_participant_id) ?? s.author_participant_id.slice(0, 6)))
+      ? (anonymousMode || forceAnonymousRaw ? '익명' : (displayAliasById.get(s.author_participant_id) ?? s.author_participant_id.slice(0, 6)))
       : '(운영자 대리)'
     // F1: 숨김(hidden) 발언은 body 를 마스킹한다 (신고됨/flagged 는 상태 라벨만 유지하고 body 는 보존).
     //     moderation 사실(moderationState)·집계·이벤트 요약은 남긴다.
@@ -403,42 +441,16 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
   })
 
   // ── moderation 내역: 발언별 moderation_events 를 모아 요약.
-  const eventLists = await Promise.all(allStatements.map((s) => statements.listModerationEvents(ctx, s.id)))
+  const eventMap = await statements.listModerationEventsByStatementIds(ctx, allStatements.map((s) => s.id))
   const byAction: Record<ModerationAction, number> = { flag: 0, hide: 0, restore: 0, approve: 0 }
   const events: ReportModerationEvent[] = []
-  for (const list of eventLists) {
-    for (const e of list) {
+  for (const s of allStatements) {
+    for (const e of eventMap[s.id] ?? []) {
       byAction[e.action] = (byAction[e.action] ?? 0) + 1
       events.push({ statementId: e.statement_id, action: e.action, actorRole: e.actor_role, reason: e.reason, createdAt: e.created_at })
     }
   }
   events.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-
-  // ── Q2: 승인된 검토 후보. AI 는 크리티컬 패스가 아니다 —
-  // 조회가 실패해도 리포트는 AI 섹션 없이 정상 발행된다 (§3).
-  const statementById = new Map(allStatements.map((s) => [s.id, s] as const))
-  let reportAiObservations: ReportAiObservation[] = []
-  try {
-    const approved = await aiObservations.list(ctx, sessionId, { status: 'approved' })
-    reportAiObservations = approved.flatMap((o) => {
-      const s = statementById.get(o.statement_id)
-      // 승인 후에 숨김 처리된 발언은 싣지 않는다 (F1 마스킹 원칙과 동일).
-      if (!s || s.moderation_state === 'hidden') return []
-      return [{
-        observationId: o.id,
-        statementId: o.statement_id,
-        roundId: o.round_id ?? s.round_id,
-        kind: o.kind,
-        body: o.body,
-        suggestedQuestion: o.suggested_question,
-        statementBody: s.body,
-        reviewedAt: o.reviewed_at,
-        provider: o.provider
-      }]
-    })
-  } catch (e) {
-    console.error(`[delib-report] ai observations unavailable: ${e instanceof Error ? e.name : 'unknown'}`)
-  }
 
   return {
     overview: {

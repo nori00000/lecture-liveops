@@ -5,7 +5,7 @@ import { getStore, bumpRevision } from '../fixture/store'
 import { newId, nowIso } from '@/lib/util/id'
 import { isNeonEnabled } from '../neon'
 import { query, queryOne, withTxn, COLS, isoOrString, type RlsContext } from '../neonHelpers'
-import type { Statement, ModerationEvent, ModerationState, ModerationAction, Role, EvidenceKind } from '../schema'
+import type { Statement, ModerationEvent, ModerationState, ModerationAction, ModerationActorRole, EvidenceKind } from '../schema'
 
 type Row = Record<string, unknown>
 
@@ -29,7 +29,7 @@ function toModerationEvent(r: Row): ModerationEvent {
   return {
     id: String(r.id),
     statement_id: String(r.statement_id),
-    actor_role: (r.actor_role as Role) ?? 'instructor',
+    actor_role: (r.actor_role as ModerationActorRole) ?? 'operator',
     action: (r.action as ModerationAction) ?? 'flag',
     reason: String(r.reason ?? ''),
     created_at: isoOrString(r.created_at)
@@ -96,8 +96,8 @@ export const statements = {
     return row
   },
   // 신고/숨김/복원 — 상태전이표 검증 + moderation_events 감사 기록 (원자, M-5).
-  // 없는 발언은 undefined, 허용되지 않는 전이는 throw. actorRole 은 서버 검증값이어야 한다 (N-5).
-  async moderate(ctx: RlsContext, statementId: string, action: ModerationAction, actorRole: Role, reason = ''): Promise<Statement | undefined> {
+  // 없는 발언은 undefined, 허용되지 않는 전이는 throw. actorRole 은 서버가 확인 가능한 감사 주체만 받는다 (M3).
+  async moderate(ctx: RlsContext, statementId: string, action: ModerationAction, actorRole: ModerationActorRole, reason = ''): Promise<Statement | undefined> {
     const current = await statements.findById(ctx, statementId)
     if (!current) return undefined
     const nextState = MODERATION_TRANSITIONS[current.moderation_state]?.[action]
@@ -127,5 +127,22 @@ export const statements = {
       return rows.map(toModerationEvent)
     }
     return getStore().moderation_events.filter((e) => e.statement_id === statementId)
+  },
+  async listModerationEventsByStatementIds(ctx: RlsContext, statementIds: string[]): Promise<Record<string, ModerationEvent[]>> {
+    const uniqueIds = Array.from(new Set(statementIds))
+    const grouped: Record<string, ModerationEvent[]> = Object.fromEntries(uniqueIds.map((id) => [id, []]))
+    if (uniqueIds.length === 0) return grouped
+    const rows = isNeonEnabled()
+      ? (await query(ctx, `select ${COLS.moderation_events} from moderation_events where statement_id = any($1) order by statement_id asc, created_at asc`, [uniqueIds])).map(toModerationEvent)
+      : getStore()
+        .moderation_events
+        .filter((e) => uniqueIds.includes(e.statement_id))
+        .slice()
+        .sort((a, b) => a.statement_id.localeCompare(b.statement_id) || a.created_at.localeCompare(b.created_at))
+    for (const event of rows) {
+      grouped[event.statement_id] ??= []
+      grouped[event.statement_id].push(event)
+    }
+    return grouped
   }
 }

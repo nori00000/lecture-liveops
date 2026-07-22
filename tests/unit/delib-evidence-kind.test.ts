@@ -102,7 +102,7 @@ describe('Q1 근거 유형 — 제출·저장·조회 왕복 (fixture)', () => {
     expect(row?.evidence_kind).toBeNull();
   });
 
-  it('대리입력(operator) 경로에서도 지정 가능하다', async () => {
+  it('대리입력(operator) 경로에서는 evidenceKind 를 null 로 강제한다', async () => {
     const pid = await newParticipant('가B');
     const r = await submitStatement({
       envelope: env('delib.submit_statement', 'instructor', {
@@ -110,7 +110,7 @@ describe('Q1 근거 유형 — 제출·저장·조회 왕복 (fixture)', () => {
       })
     });
     const row = await statements.findById(adminContext(SID), (r.data as { statementId: string }).statementId);
-    expect(row?.evidence_kind).toBe('source');
+    expect(row?.evidence_kind).toBeNull();
     expect(row?.author_participant_id).toBe(pid);
   });
 
@@ -163,15 +163,23 @@ describe('Q1 근거 유형 — 집계 정확성', () => {
   it('전체 분포 count/비율 계산', () => {
     const items = [
       item('s1', 'experience', { author: 'p1' }),
-      item('s2', 'source', { author: 'p2' }),
-      item('s3', 'estimate', { author: 'p3' }),
-      item('s4', null, { author: 'p4' })
+      item('s2', 'experience', { author: 'p2' }),
+      item('s3', 'experience', { author: 'p3' }),
+      item('s4', 'source', { author: 'p4' }),
+      item('s5', 'source', { author: 'p5' }),
+      item('s6', 'source', { author: 'p6' }),
+      item('s7', 'estimate', { author: 'p7' }),
+      item('s8', 'estimate', { author: 'p8' }),
+      item('s9', 'estimate', { author: 'p9' }),
+      item('s10', null, { author: 'p10' }),
+      item('s11', null, { author: 'p11' }),
+      item('s12', null, { author: 'p12' })
     ];
     const b = computeEvidenceKindDistribution(items);
     expect(b.overall.suppressed).toBe(false);
-    expect(b.overall.total).toBe(4);
-    expect(b.overall.tagged).toBe(3);
-    expect(b.overall.counts).toEqual({ experience: 1, source: 1, estimate: 1, unspecified: 1 });
+    expect(b.overall.total).toBe(12);
+    expect(b.overall.tagged).toBe(9);
+    expect(b.overall.counts).toEqual({ experience: 3, source: 3, estimate: 3, unspecified: 3 });
     expect(b.overall.ratios.estimate).toBeCloseTo(0.25);
     expect(b.overall.ratios.unspecified).toBeCloseTo(0.25);
   });
@@ -180,29 +188,40 @@ describe('Q1 근거 유형 — 집계 정확성', () => {
     const items = [
       item('s1', 'estimate', { groupId: 'g1', author: 'p1' }),
       item('s2', 'estimate', { groupId: 'g1', author: 'p2' }),
-      item('s3', 'source', { groupId: 'g1', author: 'p3' }),
-      item('s4', 'experience', { groupId: null, author: 'p4' })
+      item('s3', 'estimate', { groupId: 'g1', author: 'p3' }),
+      item('s4', 'source', { groupId: 'g1', author: 'p4' }),
+      item('s5', 'source', { groupId: 'g1', author: 'p5' }),
+      item('s6', 'source', { groupId: 'g1', author: 'p6' }),
+      item('s7', 'experience', { groupId: null, author: 'p7' }),
+      item('s8', 'experience', { groupId: null, author: 'p8' }),
+      item('s9', 'experience', { groupId: null, author: 'p9' })
     ];
     const b = computeEvidenceKindDistribution(items);
-    expect(b.overall.total).toBe(4);
+    expect(b.overall.suppressed).toBe(false);
+    expect(b.overall.total).toBe(9);
     expect(b.byGroup.length).toBe(1);
     const g1 = b.byGroup[0].distribution;
-    expect(g1.total).toBe(3);
-    expect(g1.counts.estimate).toBe(2);
-    expect(g1.ratios.estimate).toBeCloseTo(2 / 3);
+    expect(g1.suppressed).toBe(false);
+    expect(g1.total).toBe(6);
+    expect(g1.counts.estimate).toBe(3);
+    expect(g1.ratios.estimate).toBeCloseTo(0.5);
   });
 
   it('라운드별 분포 — 라운드 미지정은 별도 버킷', () => {
     const items = [
       item('s1', 'experience', { roundId: 'r1', author: 'p1' }),
-      item('s2', 'estimate', { roundId: 'r1', author: 'p2' }),
-      item('s3', 'estimate', { roundId: 'r1', author: 'p3' }),
-      item('s4', 'source', { roundId: null, author: 'p4' })
+      item('s2', 'experience', { roundId: 'r1', author: 'p2' }),
+      item('s3', 'experience', { roundId: 'r1', author: 'p3' }),
+      item('s4', 'estimate', { roundId: 'r1', author: 'p4' }),
+      item('s5', 'estimate', { roundId: 'r1', author: 'p5' }),
+      item('s6', 'estimate', { roundId: 'r1', author: 'p6' }),
+      item('s7', 'source', { roundId: null, author: 'p7' })
     ];
     const rounds = computeEvidenceKindByRound(items);
     const r1 = rounds.find((r) => r.roundId === 'r1')!;
-    expect(r1.overall.total).toBe(3);
-    expect(r1.overall.counts.estimate).toBe(2);
+    expect(r1.overall.suppressed).toBe(false);
+    expect(r1.overall.total).toBe(6);
+    expect(r1.overall.counts.estimate).toBe(3);
     const none = rounds.find((r) => r.roundId === null)!;
     // 기여자 1명이므로 억제되고 수치는 0 으로 마스킹된다.
     expect(none.overall.suppressed).toBe(true);
@@ -220,23 +239,16 @@ describe('Q1 근거 유형 — 집계 정확성', () => {
 describe('Q1 근거 유형 — k-익명 억제 (개인 단위 노출 금지)', () => {
   it('그룹 기여자 3명 미만이면 억제 — 수치 전부 마스킹', () => {
     const items = [
-      // g1: 기여자 2명 → 억제
       item('s1', 'estimate', { groupId: 'g1', author: 'p1' }),
-      item('s2', 'estimate', { groupId: 'g1', author: 'p2' }),
-      // g2: 기여자 3명 → 정상
-      item('s3', 'experience', { groupId: 'g2', author: 'p3' }),
-      item('s4', 'source', { groupId: 'g2', author: 'p4' }),
-      item('s5', 'estimate', { groupId: 'g2', author: 'p5' })
+      item('s2', 'estimate', { groupId: 'g1', author: 'p2' })
     ];
     const b = computeEvidenceKindDistribution(items);
     const g1 = b.byGroup.find((g) => g.groupId === 'g1')!.distribution;
     expect(g1.suppressed).toBe(true);
+    expect(g1.suppressionReason).toBe('contributors');
     expect(g1.total).toBe(0);
     expect(g1.counts).toEqual({ experience: 0, source: 0, estimate: 0, unspecified: 0 });
     expect(g1.ratios).toEqual({ experience: 0, source: 0, estimate: 0, unspecified: 0 });
-    const g2 = b.byGroup.find((g) => g.groupId === 'g2')!.distribution;
-    expect(g2.suppressed).toBe(false);
-    expect(g2.total).toBe(3);
   });
 
   it('발언 수가 많아도 기여자가 1명이면 억제 (발언 수로 우회 불가)', () => {
@@ -249,6 +261,7 @@ describe('Q1 근거 유형 — k-익명 억제 (개인 단위 노출 금지)', (
     const g1 = computeEvidenceKindDistribution(items).byGroup[0].distribution;
     expect(g1.contributors).toBe(1);
     expect(g1.suppressed).toBe(true);
+    expect(g1.suppressionReason).toBe('contributors');
   });
 
   it('작성자 미상(대리입력)은 하나의 기여자로 묶어 보수적으로 판정한다', () => {
@@ -260,15 +273,74 @@ describe('Q1 근거 유형 — k-익명 억제 (개인 단위 노출 금지)', (
     const g1 = computeEvidenceKindDistribution(items).byGroup[0].distribution;
     expect(g1.contributors).toBe(1);
     expect(g1.suppressed).toBe(true);
+    expect(g1.suppressionReason).toBe('contributors');
   });
 
   it('임계값은 옵션으로 조정 가능 (기본 3)', () => {
     const items = [
       item('s1', 'estimate', { groupId: 'g1', author: 'p1' }),
-      item('s2', 'source', { groupId: 'g1', author: 'p2' })
+      item('s2', 'source', { groupId: 'g1', author: 'p1' }),
+      item('s3', 'estimate', { groupId: 'g1', author: 'p2' }),
+      item('s4', 'source', { groupId: 'g1', author: 'p2' })
     ];
     expect(computeEvidenceKindDistribution(items).byGroup[0].distribution.suppressed).toBe(true);
     expect(computeEvidenceKindDistribution(items, { kAnonymityThreshold: 2 }).byGroup[0].distribution.suppressed).toBe(false);
+  });
+
+  it('비영 셀이 k 미만이면 기여자가 충분해도 분포 전체를 억제한다', () => {
+    const items = [
+      item('s1', 'experience', { groupId: 'g1', author: 'p1' }),
+      item('s2', 'experience', { groupId: 'g1', author: 'p2' }),
+      item('s3', 'experience', { groupId: 'g1', author: 'p3' }),
+      item('s4', 'estimate', { groupId: 'g1', author: 'p4' })
+    ];
+    const g1 = computeEvidenceKindDistribution(items).byGroup[0].distribution;
+    expect(g1.contributors).toBe(4);
+    expect(g1.suppressed).toBe(true);
+    expect(g1.suppressionReason).toBe('small_cell');
+    expect(g1.total).toBe(0);
+  });
+
+  it('억제 그룹이 있으면 overall 도 억제해 차분 복원을 막는다', () => {
+    const items = [
+      item('s1', 'estimate', { groupId: 'g1', author: 'p1' }),
+      item('s2', 'estimate', { groupId: 'g1', author: 'p2' }),
+      item('s3', 'source', { groupId: 'g2', author: 'p3' }),
+      item('s4', 'source', { groupId: 'g2', author: 'p4' }),
+      item('s5', 'source', { groupId: 'g2', author: 'p5' }),
+      item('s6', 'estimate', { groupId: 'g2', author: 'p6' }),
+      item('s7', 'estimate', { groupId: 'g2', author: 'p7' }),
+      item('s8', 'estimate', { groupId: 'g2', author: 'p8' })
+    ];
+    const b = computeEvidenceKindDistribution(items);
+    expect(b.overall.suppressed).toBe(true);
+    expect(b.overall.suppressionReason).toBe('group_residual');
+  });
+
+  it('억제 그룹이 하나뿐이면 가장 작은 공개 그룹을 보완 억제한다', () => {
+    const items = [
+      item('s1', 'estimate', { groupId: 'g1', author: 'p1' }),
+      item('s2', 'estimate', { groupId: 'g1', author: 'p2' }),
+      item('s3', 'source', { groupId: 'g2', author: 'p3' }),
+      item('s4', 'source', { groupId: 'g2', author: 'p4' }),
+      item('s5', 'source', { groupId: 'g2', author: 'p5' }),
+      item('s6', 'estimate', { groupId: 'g2', author: 'p6' }),
+      item('s7', 'estimate', { groupId: 'g2', author: 'p7' }),
+      item('s8', 'estimate', { groupId: 'g2', author: 'p8' }),
+      item('s9', 'experience', { groupId: 'g3', author: 'p9' }),
+      item('s10', 'experience', { groupId: 'g3', author: 'p10' }),
+      item('s11', 'experience', { groupId: 'g3', author: 'p11' }),
+      item('s12', 'source', { groupId: 'g3', author: 'p12' }),
+      item('s13', 'source', { groupId: 'g3', author: 'p13' }),
+      item('s14', 'source', { groupId: 'g3', author: 'p14' }),
+      item('s15', 'estimate', { groupId: 'g3', author: 'p15' }),
+      item('s16', 'estimate', { groupId: 'g3', author: 'p16' }),
+      item('s17', 'estimate', { groupId: 'g3', author: 'p17' })
+    ];
+    const b = computeEvidenceKindDistribution(items);
+    expect(b.byGroup.find((g) => g.groupId === 'g1')!.distribution.suppressionReason).toBe('contributors');
+    expect(b.byGroup.find((g) => g.groupId === 'g2')!.distribution.suppressionReason).toBe('complementary');
+    expect(b.byGroup.find((g) => g.groupId === 'g3')!.distribution.suppressed).toBe(false);
   });
 });
 

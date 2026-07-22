@@ -202,6 +202,13 @@ export type EvidenceKindCounts = {
   unspecified: number
 }
 
+// 억제 사유 — 납품물·콘솔이 "왜 수치가 없는지"를 정확히 표기할 수 있게 한다 (억제도 절차 증빙의 일부).
+//  contributors   기여자 수가 k 미만 (그룹 자체가 너무 작다)
+//  small_cell     비영이면서 k 미만인 셀 존재 (C3 — "추정 1건"이 특정인 확정으로 이어진다)
+//  group_residual byGroup 중 억제된 그룹이 있어 overall 도 억제 (C2 — 차분 복원 차단)
+//  complementary  억제 그룹이 1개뿐이라 잔차로 복원되므로 추가 억제된 그룹 (C2)
+export type EvidenceSuppressionReason = 'contributors' | 'small_cell' | 'group_residual' | 'complementary' | null
+
 export type EvidenceKindDistribution = {
   // 집계 대상 발언 수 (미지정 포함).
   total: number
@@ -212,8 +219,9 @@ export type EvidenceKindDistribution = {
   counts: EvidenceKindCounts
   // total 대비 비율. total 0 이거나 억제면 전부 0.
   ratios: EvidenceKindCounts
-  // true 면 기여자 k 미만 → 수치 전부 0 으로 마스킹. 개인 태깅 역추론 차단.
+  // true 면 수치 전부 0 으로 마스킹. 개인 태깅 역추론 차단.
   suppressed: boolean
+  suppressionReason: EvidenceSuppressionReason
 }
 
 export type EvidenceKindBreakdown = {
@@ -225,8 +233,19 @@ export type EvidenceKindRoundBreakdown = EvidenceKindBreakdown & { roundId: stri
 
 const ZERO_COUNTS: EvidenceKindCounts = { experience: 0, source: 0, estimate: 0, unspecified: 0 }
 
-function emptyDistribution(contributors = 0, suppressed = false): EvidenceKindDistribution {
-  return { total: 0, tagged: 0, contributors, counts: { ...ZERO_COUNTS }, ratios: { ...ZERO_COUNTS }, suppressed }
+function emptyDistribution(
+  contributors = 0,
+  suppressed = false,
+  suppressionReason: EvidenceSuppressionReason = null
+): EvidenceKindDistribution {
+  return { total: 0, tagged: 0, contributors, counts: { ...ZERO_COUNTS }, ratios: { ...ZERO_COUNTS }, suppressed, suppressionReason }
+}
+
+// 이미 계산된 분포를 사후 억제한다 (C2 — 그룹 억제 사실이 드러난 뒤 overall/보완 그룹을 지운다).
+// 수치는 전부 0 으로 마스킹하고 contributors 만 남긴다(억제 판정 근거 표기용).
+function suppressDistribution(d: EvidenceKindDistribution, reason: EvidenceSuppressionReason): EvidenceKindDistribution {
+  if (d.suppressed) return d
+  return emptyDistribution(d.contributors, true, reason)
 }
 
 // 기여자 수 — 식별 가능한 작성자는 각각 1, 작성자 미상(대리입력)은 전부 합쳐 1.
@@ -244,7 +263,7 @@ function distributionFor(items: EvidenceKindItem[], kThreshold: number): Evidenc
   const contributors = contributorCount(items)
   if (items.length === 0) return emptyDistribution(0, false)
   // k-익명 억제: 기여자가 임계 미만이면 개인의 태깅 성향이 그대로 드러난다 → 수치 미노출.
-  if (contributors < kThreshold) return emptyDistribution(contributors, true)
+  if (contributors < kThreshold) return emptyDistribution(contributors, true, 'contributors')
   const counts: EvidenceKindCounts = { ...ZERO_COUNTS }
   for (const it of items) {
     if (it.evidenceKind === 'experience') counts.experience += 1
@@ -252,6 +271,11 @@ function distributionFor(items: EvidenceKindItem[], kThreshold: number): Evidenc
     else if (it.evidenceKind === 'estimate') counts.estimate += 1
     else counts.unspecified += 1
   }
+  // C3 셀 억제: 기여자 수가 충분해도 **셀** 하나가 작으면 그 셀이 개인을 지목한다
+  // (기여자 4명 3:1 → "추정 1건" = 특정인 확정). 부분 마스킹은 total 잔차로 복원되므로
+  // 셀 단위가 아니라 **분포 전체**를 억제한다.
+  const hasSmallCell = (Object.values(counts) as number[]).some((c) => c > 0 && c < kThreshold)
+  if (hasSmallCell) return emptyDistribution(contributors, true, 'small_cell')
   const total = items.length
   const ratios: EvidenceKindCounts = {
     experience: counts.experience / total,
@@ -265,7 +289,8 @@ function distributionFor(items: EvidenceKindItem[], kThreshold: number): Evidenc
     contributors,
     counts,
     ratios,
-    suppressed: false
+    suppressed: false,
+    suppressionReason: null
   }
 }
 
@@ -282,12 +307,34 @@ export function computeEvidenceKindDistribution(
     arr.push(it)
     byGroupMap.set(it.groupId, arr)
   }
-  return {
-    overall: distributionFor(items, kThreshold),
-    byGroup: [...byGroupMap.entries()]
-      .map(([groupId, arr]) => ({ groupId, distribution: distributionFor(arr, kThreshold) }))
-      .sort((a, b) => a.groupId.localeCompare(b.groupId))
+  let overall = distributionFor(items, kThreshold)
+  const byGroup = [...byGroupMap.entries()]
+    .map(([groupId, arr]) => ({ groupId, distribution: distributionFor(arr, kThreshold) }))
+    .sort((a, b) => a.groupId.localeCompare(b.groupId))
+
+  // ── C2 차분(differencing) 공격 차단 ──
+  // overall 과 byGroup 이 같은 페이로드에 실리므로, 억제된 그룹의 수치는
+  // overall − Σ(공개 그룹) 으로 오차 0 복원된다. 억제가 하나라도 있으면 overall 을 함께 억제한다.
+  // (그룹 미배정 발언이 overall 에만 포함되어 잔차가 정확히 일치하지 않는 경우가 있지만,
+  //  일치 여부를 공격자가 알 수 없다고 가정하는 것은 방어가 아니므로 무조건 억제한다.)
+  const suppressedGroups = byGroup.filter((g) => g.distribution.suppressed)
+  if (suppressedGroups.length > 0) {
+    overall = suppressDistribution(overall, 'group_residual')
+    // 억제 그룹이 정확히 1개면 "나머지 전부 공개 + 억제 1개" 구조라 다른 집계(라운드 합 등)와
+    // 대조하면 즉시 복원된다 → 가장 작은 공개 그룹을 하나 더 억제한다 (complementary suppression).
+    if (suppressedGroups.length === 1) {
+      const published = byGroup.filter((g) => !g.distribution.suppressed)
+      if (published.length > 0) {
+        // 결정론적 선택: total 최소 → 동률이면 groupId 사전순.
+        const victim = published.slice().sort(
+          (a, b) => a.distribution.total - b.distribution.total || a.groupId.localeCompare(b.groupId)
+        )[0]
+        victim.distribution = suppressDistribution(victim.distribution, 'complementary')
+      }
+    }
   }
+
+  return { overall, byGroup }
 }
 
 // 라운드별 근거 유형 분포. roundId 미지정 발언은 별도 버킷(null)으로 묶는다.

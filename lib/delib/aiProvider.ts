@@ -12,6 +12,7 @@
 //   local    m4-studio Ollama 등 사내 HTTP 엔드포인트(DELIB_LOCAL_LLM_URL). 미설정이면 stub 로 폴백.
 //   external 외부 LLM API. privacy_settings.offsiteProcessing === true + env 설정이 없으면 **거부**.
 
+import { isIP } from 'node:net'
 import type { EvidenceKind } from '@/lib/db/schema'
 
 export type AiProvider = 'stub' | 'local' | 'external'
@@ -40,6 +41,12 @@ export type AnalyzeInput = {
 // ClaimBuster 근거(§2 Q2): 전수가 아니라 **랭킹 상위 소수**만 제시해야 실용적이다.
 const MAX_CANDIDATES = 10
 const TIMEOUT_MS = 20_000
+const MAX_RESPONSE_BYTES = 1_000_000
+const MAX_BODY_CHARS = 500
+const MAX_QUESTION_CHARS = 200
+const MAX_TEXT_LINES = 6
+const FORMULA_PREFIX = /^[=+\-@]/
+const MARKDOWN_STRUCTURES = /[`*_#[\]()>|]/g
 
 // ------------------------------------------------------------
 // stub — 결정론적 규칙 (LLM 호출 0)
@@ -121,9 +128,50 @@ export function externalConfigured(): boolean {
   return Boolean(process.env.DELIB_EXTERNAL_LLM_URL && process.env.DELIB_EXTERNAL_LLM_API_KEY)
 }
 
+function stripIpv6Brackets(hostname: string): string {
+  return hostname.replace(/^\[|\]$/g, '').toLowerCase()
+}
+
+function isAllowedLocalHostname(hostname: string): boolean {
+  const host = stripIpv6Brackets(hostname)
+  if (host === 'localhost' || host === '::1') return true
+  if (host.endsWith('.ts.net')) return true
+  if (isIP(host) === 4) {
+    const parts = host.split('.').map((p) => Number(p))
+    if (parts.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return false
+    const [a, b] = parts
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+  }
+  return false
+}
+
+function assertLocalProviderUrlAllowed(rawUrl: string): void {
+  let url: URL
+  try {
+    url = new URL(rawUrl)
+  } catch {
+    throw new Error('delib: local ai provider url is invalid')
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('delib: local ai provider url must use http or https')
+  }
+  if (url.username || url.password) {
+    throw new Error('delib: local ai provider url must not include credentials')
+  }
+  if (!isAllowedLocalHostname(url.hostname)) {
+    throw new Error('delib: local ai provider url host is not allowed')
+  }
+}
+
 // 정책 위반은 **거부**한다 (빈 배열이 아니라 예외) — 전사 설계와 동일 원칙.
 // 호출자(액션)가 이걸 먼저 부르고, provider 내부에서도 2차로 재확인한다.
 export function assertProviderAllowed(provider: AiProvider, opts: { offsiteProcessing: boolean }): void {
+  if (provider === 'local') {
+    const url = process.env.DELIB_LOCAL_LLM_URL
+    // 미설정은 stub 폴백 경로이므로 허용한다. 설정된 URL 만 로컬/사설망 allowlist 로 제한한다.
+    if (url) assertLocalProviderUrlAllowed(url)
+    return
+  }
   if (provider !== 'external') return
   if (opts.offsiteProcessing !== true) {
     throw new Error('delib: external ai provider requires offsite processing consent')
@@ -137,6 +185,19 @@ export function assertProviderAllowed(provider: AiProvider, opts: { offsiteProce
 // HTTP provider 공통 — 응답 파싱은 방어적으로. 알 수 없는 값은 버린다.
 // ------------------------------------------------------------
 
+function sanitizeProviderText(value: string, maxChars: number): string {
+  const lines = value
+    .trim()
+    .split(/\r?\n/)
+    .slice(0, MAX_TEXT_LINES)
+    .map((line) => line.replace(MARKDOWN_STRUCTURES, '').trim())
+    .filter(Boolean)
+  let text = lines.join(' ').slice(0, maxChars).trim()
+  if (FORMULA_PREFIX.test(text)) text = `'${text}`
+  if (text.length > maxChars) text = text.slice(0, maxChars).trim()
+  return text
+}
+
 function parseCandidates(raw: unknown, allowedIds: Set<string>): ObservationCandidate[] {
   if (!Array.isArray(raw)) return []
   const out: ObservationCandidate[] = []
@@ -145,8 +206,9 @@ function parseCandidates(raw: unknown, allowedIds: Set<string>): ObservationCand
     const o = item as Record<string, unknown>
     const statementId = typeof o.statementId === 'string' ? o.statementId : ''
     const kind = o.kind === 'evidence_check' || o.kind === 'definition_mismatch' ? o.kind : null
-    const body = typeof o.body === 'string' ? o.body.trim() : ''
-    const suggestedQuestion = typeof o.suggestedQuestion === 'string' ? o.suggestedQuestion.trim() : ''
+    const body = typeof o.body === 'string' ? sanitizeProviderText(o.body, MAX_BODY_CHARS) : ''
+    const suggestedQuestion =
+      typeof o.suggestedQuestion === 'string' ? sanitizeProviderText(o.suggestedQuestion, MAX_QUESTION_CHARS) : ''
     // 입력에 없던 발언을 지어낸 응답은 버린다 (환각 statementId 차단).
     if (!statementId || !allowedIds.has(statementId) || !kind || !body) continue
     out.push({ statementId, kind, body, suggestedQuestion })
@@ -172,6 +234,30 @@ function extractJsonArray(text: string): unknown {
   } catch {
     return null
   }
+}
+
+async function readCappedResponseText(res: Response): Promise<string | null> {
+  const contentLength = res.headers.get('content-length')
+  if (contentLength && Number(contentLength) > MAX_RESPONSE_BYTES) return null
+  if (!res.body) {
+    const text = await res.text()
+    return Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES ? null : text
+  }
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (!value) continue
+    total += value.byteLength
+    if (total > MAX_RESPONSE_BYTES) {
+      await reader.cancel()
+      return null
+    }
+    chunks.push(value)
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks))
 }
 
 // chat-completions 호환 endpoint 호출. 실패는 전부 [] (호출자를 깨지 않는다).
@@ -203,14 +289,20 @@ async function httpAnalyze(
           { role: 'user', content: userPayload }
         ]
       }),
-      signal: controller.signal
+      signal: controller.signal,
+      redirect: 'manual'
     })
     if (!res.ok) {
       // 응답 원문·키는 로그에 남기지 않는다 (상태코드만).
       console.error(`[delib-ai:${label}] http error status=${res.status}`)
       return []
     }
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: unknown } }> }
+    const text = await readCappedResponseText(res)
+    if (text == null) {
+      console.error(`[delib-ai:${label}] response too large`)
+      return []
+    }
+    const json = JSON.parse(text) as { choices?: Array<{ message?: { content?: unknown } }> }
     const content = json.choices?.[0]?.message?.content
     if (typeof content !== 'string') {
       console.error(`[delib-ai:${label}] unexpected response shape`)
@@ -230,6 +322,9 @@ async function httpAnalyze(
 // ------------------------------------------------------------
 export async function analyzeStatements(input: AnalyzeInput): Promise<ObservationCandidate[]> {
   if (input.statements.length === 0) return []
+  if (input.provider === 'local' && process.env.DELIB_LOCAL_LLM_URL) {
+    assertLocalProviderUrlAllowed(process.env.DELIB_LOCAL_LLM_URL)
+  }
   try {
     if (input.provider === 'external') {
       // 2차 방어 — 액션에서 이미 거부되지만, 동의 없는 오프사이트 전송은 여기서도 막는다.

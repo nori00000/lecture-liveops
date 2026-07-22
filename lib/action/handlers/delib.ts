@@ -249,7 +249,7 @@ const SubmitStatementInput = z.object({
   visibility: StatementVisibilityEnum.optional(),
   // Q1: 근거 유형 자기 태깅 (DELIBERATION-QUALITY-PLAN §2 Q1). **선택사항** — 미지정이면 null 로 저장.
   // 판정이 아니라 자기 귀속이므로 서버는 값 검증(enum)만 하고 내용을 해석하지 않는다.
-  // 대리입력(operator) 경로에서도 지정 가능하되 강제하지 않는다.
+  // Codex2: 대리입력(operator 가 authorParticipantId 지정) 경로에서는 값이 와도 **저장하지 않는다** — 아래 참조.
   evidenceKind: EvidenceKindEnum.optional()
 })
 
@@ -291,6 +291,15 @@ export const submitStatement: Handler = async ({ envelope, trusted }) => {
     throw new Error('delib: participant identity required')
   }
   await assertStatementScope(ctx, sessionId, input.roundId ?? null, input.groupId ?? null, authorParticipantId)
+  // Codex2 (대리입력 오귀속 차단): Q1 근거 유형은 **참가자 본인이 고른 값**으로만 집계된다.
+  // operator 가 참가자를 지정해 대신 입력하는 경로에서 온 태그는 실제 선택 주체가 운영자이므로,
+  // 그대로 저장하면 "참가자 자기 선택 분포"(§5 지표)가 조용히 오염된다.
+  // 출처 컬럼(evidence_kind_source)이 없는 현재 스키마에서는 구분해 저장할 수 없으므로 **null 강제**한다.
+  //  - participant 경로: 본인이 고른 값 그대로 저장.
+  //  - operator 본인 발언(authorParticipantId 없음): 대리 귀속이 아니므로 저장 허용.
+  //  - operator 대리입력(authorParticipantId 지정): null.
+  const isProxyEntry = envelope.actor.role !== 'participant' && authorParticipantId != null
+  const evidenceKind = isProxyEntry ? null : (input.evidenceKind ?? null)
   const row = await statements.submit(ctx, {
     session_id: sessionId,
     round_id: input.roundId ?? null,
@@ -298,7 +307,7 @@ export const submitStatement: Handler = async ({ envelope, trusted }) => {
     author_participant_id: authorParticipantId,
     body: input.body,
     visibility: input.visibility ?? 'group',
-    evidence_kind: input.evidenceKind ?? null
+    evidence_kind: evidenceKind
   })
   return { data: { statementId: row.id }, summary: `statement submitted ${row.id}` }
 }
@@ -309,12 +318,12 @@ const ModerateStatementInput = z.object({
   reason: z.string().optional()
 })
 
-// actorRole 은 서버 authz 게이트를 통과한 envelope.actor.role — 감사에 클라이언트 별도 주장 role 을
-// 기록하지 않는다 (N-5). 상태전이 검증은 repo(statements.moderate)의 전이표가 담당 (M-5).
+// Operator gate 는 "운영자 권한 집합"만 검증하고 admin/instructor/assistant 세부 role 은
+// 클라이언트가 주장한 값이다. 없는 정보를 감사 로그에 있는 척 저장하지 않기 위해 operator 로 정규화한다 (M3).
 export const moderateStatement: Handler = async ({ envelope }) => {
   const input = ModerateStatementInput.parse(envelope.input)
   const ctx = envelopeToCtx(envelope)
-  const row = await statements.moderate(ctx, input.statementId, input.action, envelope.actor.role, input.reason ?? '')
+  const row = await statements.moderate(ctx, input.statementId, input.action, 'operator', input.reason ?? '')
   if (!row) throw new Error('statement not found')
   return { data: { statementId: row.id, moderationState: row.moderation_state }, summary: `statement ${row.id} ${input.action} → ${row.moderation_state}` }
 }
@@ -417,6 +426,22 @@ const ComputeAiObservationsInput = z.object({
   provider: z.enum(['stub', 'local', 'external']).optional()
 })
 
+// M6 랭킹 상한 — 퍼실리테이터 검토 피로를 감안한 "상위 소수"(§2 Q2, ClaimBuster 근거).
+const MAX_AI_OBSERVATIONS = 10
+
+// M6 랭킹 점수 — 결정론적이어야 한다(같은 입력이면 언제나 같은 순서). 무작위·시간 의존 금지.
+// 수치 주장은 사후 확인이 실제로 가능한 지점이므로 가중치를 크게 준다.
+const RANK_NUMERIC_CLAIM = /\d+(?:[.,]\d+)?\s*(?:%|퍼센트|배|명|억|만|천|원|건|년|개)/g
+
+function candidateScore(candidate: { statementId: string; kind: string }, body: string): number {
+  // provider 가 자체 score 를 실어 보내면 그것을 우선한다 (현재 stub 은 보내지 않는다).
+  const raw = (candidate as { score?: unknown }).score
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw
+  const numericClaims = body.match(RANK_NUMERIC_CLAIM)?.length ?? 0
+  // 길이는 0~1 로 정규화해 수치 주장 1건(2점)을 절대 뒤집지 못하게 한다.
+  return numericClaims * 2 + Math.min(body.length, 200) / 200
+}
+
 // operator 전용 (permissions). 후보는 전부 pending 으로 저장되고,
 // 퍼실리테이터가 승인한 것만 리포트에 실린다 — 참가자 화면·프로젝터에는 어떤 경로로도 나가지 않는다.
 export const computeAiObservations: Handler = async ({ envelope }) => {
@@ -431,14 +456,58 @@ export const computeAiObservations: Handler = async ({ envelope }) => {
 
   // 후보 대상은 visible 발언만 — hidden/flagged 는 집계와 마찬가지로 제외한다 (M-1).
   const rows = await statements.list(ctx, input.sessionId, input.roundId, { visibleOnly: true })
-  // 재계산 시 미검토(pending) 후보만 정리한다. 승인·기각 이력은 감사 근거로 보존.
-  await aiObservations.deletePending(ctx, input.sessionId, input.roundId ?? null)
 
+  // M2 (Q1→Q2 결합 해제): provider 에 evidenceKind 를 넘기지 않는다 — 항상 null.
+  // 결합하면 정직하게 '추정'을 고른 사람만 리포트 후보로 뽑히고, 2회차부터 아무도 '추정'을 고르지 않는다
+  // → §5 kill 지표('추정' 비율)가 설계된 인센티브로 발동한다. Q1 태그는 후보 선정에 쓰지 않고
+  //   퍼실리테이터 화면의 참고 표시로만 쓴다 (docs/DELIBERATION-QUALITY-PLAN.md §2 Q1·Q2).
   const candidates = await analyzeStatements({
     provider,
     offsiteProcessing,
-    statements: rows.map((s) => ({ id: s.id, body: s.body, evidenceKind: s.evidence_kind }))
+    statements: rows.map((s) => ({ id: s.id, body: s.body, evidenceKind: null }))
   })
+
+  // M5 (순서 수정): 예전에는 analyze 전에 deletePending 을 불러서, provider 가 실패하면
+  // 퍼실리테이터의 기존 검토 큐가 통째로 사라지고 ok 가 반환됐다.
+  // 후보가 0건이면 **아무것도 지우지 않고** 조기 반환한다.
+  if (candidates.length === 0) {
+    return {
+      data: {
+        sessionId: input.sessionId,
+        provider,
+        analyzedCount: rows.length,
+        candidateCount: 0,
+        // 발언은 있는데 후보가 0건인 상황은 provider 실패와 "해당 없음"을 구분할 수 없다.
+        // 보수적으로 실패 가능성을 신호하고 기존 pending 을 보존한다.
+        providerFailed: rows.length > 0,
+        pendingPreserved: true
+      },
+      summary: `ai observations computed 0/${rows.length} (${provider}) — pending preserved`
+    }
+  }
+
+  // M6 (랭킹): provider 는 입력 순서대로 돌려주므로 상한(10)에 걸리면 **먼저 제출한 사람**이
+  // 체계적으로 불리해진다. 계획서(§2 Q2)의 근거는 ClaimBuster "랭킹 상위 소수"이므로
+  // 저장 전에 결정론적으로 정렬한 뒤 상한에서 자른다.
+  // 정렬 키(전부 결정론적):
+  //   1) provider 가 score 를 돌려줬으면 score desc (현재 stub 은 없음 — 외부 provider 대비)
+  //   2) 없으면 검증 가능성 대리지표: 수치 주장 수(2점/건) + 본문 길이 정규화(0~1) desc
+  //   3) statementId 사전순 → kind 사전순 (완전 동점에서도 순서가 고정된다)
+  // 주의: provider 내부에서 이미 10건으로 잘린 뒤라 여기서의 정렬은 "잘린 집합 안"에서만 유효하다.
+  //       provider 측 상한 제거는 별도 레인(aiProvider.ts) 소관.
+  const bodyById = new Map(rows.map((s) => [s.id, s.body] as const))
+  const ranked = candidates
+    .map((c) => ({ c, score: candidateScore(c, bodyById.get(c.statementId) ?? '') }))
+    .sort((a, b) =>
+      b.score - a.score ||
+      a.c.statementId.localeCompare(b.c.statementId) ||
+      a.c.kind.localeCompare(b.c.kind)
+    )
+    .slice(0, MAX_AI_OBSERVATIONS)
+    .map((r) => r.c)
+
+  // 재계산 시 미검토(pending) 후보만 정리한다. 승인·기각 이력은 감사 근거로 보존.
+  await aiObservations.deletePending(ctx, input.sessionId, input.roundId ?? null)
   const roundById = new Map(rows.map((s) => [s.id, s.round_id] as const))
   // 이미 검토된(승인·기각) 조합은 다시 후보로 만들지 않는다 — 기각은 영구 제외이고,
   // 재계산이 퍼실리테이터에게 같은 항목을 반복 제시하면 검토 피로만 늘어난다.
@@ -449,7 +518,7 @@ export const computeAiObservations: Handler = async ({ envelope }) => {
   )
   const saved = await aiObservations.insertMany(
     ctx,
-    candidates.filter((c) => !reviewedKeys.has(`${c.statementId}:${c.kind}`)).map((c) => ({
+    ranked.filter((c) => !reviewedKeys.has(`${c.statementId}:${c.kind}`)).map((c) => ({
       session_id: input.sessionId,
       round_id: roundById.get(c.statementId) ?? input.roundId ?? null,
       statement_id: c.statementId,
@@ -460,7 +529,14 @@ export const computeAiObservations: Handler = async ({ envelope }) => {
     }))
   )
   return {
-    data: { sessionId: input.sessionId, provider, analyzedCount: rows.length, candidateCount: saved.length },
+    data: {
+      sessionId: input.sessionId,
+      provider,
+      analyzedCount: rows.length,
+      candidateCount: saved.length,
+      providerFailed: false,
+      pendingPreserved: false
+    },
     summary: `ai observations computed ${saved.length}/${rows.length} (${provider})`
   }
 }
@@ -477,8 +553,8 @@ export const reviewAiObservation: Handler = async ({ envelope }) => {
   const input = ReviewAiObservationInput.parse(envelope.input)
   const ctx = envelopeToCtx(envelope)
   const status = input.decision === 'approve' ? 'approved' : 'rejected'
-  // 검토 주체는 서버 authz 를 통과한 envelope.actor.role 만 기록한다 (개인 신원 미기록, N-5 준용).
-  const row = await aiObservations.review(ctx, input.observationId, status, envelope.actor.role, input.reason ?? '')
+  // Operator gate 가 확인한 것은 세부 role 이 아니라 운영자 권한 집합이다. 감사 필드도 그 사실만 기록한다 (M3).
+  const row = await aiObservations.review(ctx, input.observationId, status, 'operator', input.reason ?? '')
   if (!row) throw new Error('delib: ai observation not found')
   return { data: { observationId: row.id, status: row.status }, summary: `ai observation ${row.id} ${row.status}` }
 }

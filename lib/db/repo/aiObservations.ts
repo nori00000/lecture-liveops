@@ -8,7 +8,7 @@
 import { getStore, bumpRevision } from '../fixture/store'
 import { newId, nowIso } from '@/lib/util/id'
 import { isNeonEnabled } from '../neon'
-import { query, queryOne, COLS, isoOrString, type RlsContext } from '../neonHelpers'
+import { query, queryOne, withTxn, COLS, isoOrString, type Row as NeonRow, type RlsContext } from '../neonHelpers'
 import type { RoundAiObservation, AiObservationKind, AiObservationStatus } from '../schema'
 
 type Row = Record<string, unknown>
@@ -46,16 +46,16 @@ export const aiObservations = {
   async list(ctx: RlsContext, sessionId: string, opts: { status?: AiObservationStatus } = {}): Promise<RoundAiObservation[]> {
     if (isNeonEnabled()) {
       if (opts.status) {
-        const rows = await query(ctx, `select ${COLS.round_ai_observations} from round_ai_observations where session_id = $1 and status = $2 order by created_at asc`, [sessionId, opts.status])
+        const rows = await query(ctx, `select ${COLS.round_ai_observations} from round_ai_observations where session_id = $1 and status = $2 order by created_at asc, id asc`, [sessionId, opts.status])
         return rows.map(toObservation)
       }
-      const rows = await query(ctx, `select ${COLS.round_ai_observations} from round_ai_observations where session_id = $1 order by created_at asc`, [sessionId])
+      const rows = await query(ctx, `select ${COLS.round_ai_observations} from round_ai_observations where session_id = $1 order by created_at asc, id asc`, [sessionId])
       return rows.map(toObservation)
     }
     return getStore()
       .round_ai_observations.filter((o) => o.session_id === sessionId && (opts.status ? o.status === opts.status : true))
       .slice()
-      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+      .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
   },
 
   async findById(ctx: RlsContext, id: string): Promise<RoundAiObservation | undefined> {
@@ -85,18 +85,32 @@ export const aiObservations = {
       created_at: nowIso()
     }))
     if (isNeonEnabled()) {
-      for (const row of rows) {
-        await query(
-          ctx,
-          `insert into round_ai_observations (${COLS.round_ai_observations}) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-          [row.id, row.session_id, row.round_id, row.statement_id, row.kind, row.body, row.suggested_question, row.status, row.reviewed_by, row.reviewed_at, row.review_reason, row.provider, row.created_at]
+      const results = await withTxn(ctx, (sql) =>
+        rows.map((row) =>
+          sql.query(
+            `insert into round_ai_observations (${COLS.round_ai_observations}) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) on conflict do nothing returning ${COLS.round_ai_observations}`,
+            [row.id, row.session_id, row.round_id, row.statement_id, row.kind, row.body, row.suggested_question, row.status, row.reviewed_by, row.reviewed_at, row.review_reason, row.provider, row.created_at]
+          )
         )
-      }
-      return rows
+      )
+      return (results as NeonRow[][]).flat().map(toObservation)
     }
-    getStore().round_ai_observations = [...getStore().round_ai_observations, ...rows]
+    const s = getStore()
+    const activeKeys = new Set(
+      s.round_ai_observations
+        .filter((o) => o.status !== 'rejected')
+        .map((o) => `${o.session_id}:${o.statement_id}:${o.kind}`)
+    )
+    const accepted: RoundAiObservation[] = []
+    for (const row of rows) {
+      const key = `${row.session_id}:${row.statement_id}:${row.kind}`
+      if (activeKeys.has(key)) continue
+      activeKeys.add(key)
+      accepted.push(row)
+    }
+    s.round_ai_observations = [...s.round_ai_observations, ...accepted]
     bumpRevision()
-    return rows
+    return accepted
   },
 
   // 승인/기각 — 이미 검토된 항목은 다시 바꾸지 않는다(기각은 영구 제외).
@@ -107,21 +121,21 @@ export const aiObservations = {
     reviewedBy: string,
     reason = ''
   ): Promise<RoundAiObservation | undefined> {
-    const current = await aiObservations.findById(ctx, id)
-    if (!current) return undefined
-    if (current.status !== 'pending') {
-      throw new Error(`delib: ai observation already reviewed (${current.status})`)
-    }
     const now = nowIso()
     if (isNeonEnabled()) {
-      await query(
+      const rows = await query(
         ctx,
-        `update round_ai_observations set status = $2, reviewed_by = $3, reviewed_at = $4, review_reason = $5 where id = $1 and status = 'pending'`,
+        `update round_ai_observations set status = $2, reviewed_by = $3, reviewed_at = $4, review_reason = $5 where id = $1 and status = 'pending' returning ${COLS.round_ai_observations}`,
         [id, status, reviewedBy, now, reason]
       )
-      return aiObservations.findById(ctx, id)
+      if (rows.length === 0) throw new Error('delib: ai observation already reviewed or not found')
+      return toObservation(rows[0])
     }
     const s = getStore()
+    const current = s.round_ai_observations.find((o) => o.id === id)
+    if (!current || current.status !== 'pending') {
+      throw new Error('delib: ai observation already reviewed or not found')
+    }
     s.round_ai_observations = s.round_ai_observations.map((o) =>
       o.id === id ? { ...o, status, reviewed_by: reviewedBy, reviewed_at: now, review_reason: reason } : o
     )

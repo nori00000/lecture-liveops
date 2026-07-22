@@ -5,6 +5,7 @@ const ts = z.string()
 
 export const VisibilityEnum = z.enum(['public', 'session', 'private', 'admin_only'])
 export const RoleEnum = z.enum(['admin', 'instructor', 'assistant', 'participant'])
+export const ModerationActorRoleEnum = z.enum(['admin', 'instructor', 'assistant', 'participant', 'operator'])
 export const ActorTypeEnum = z.enum(['human', 'llm', 'system'])
 export const ToolEnum = z.enum(['claude-code', 'codex', 'opencode', 'mcp', 'web-ui'])
 export const SessionModeEnum = z.enum(['prep', 'live', 'after', 'archived'])
@@ -438,7 +439,7 @@ export const LandscapeSnapshotSchema = z.object({
 export const ModerationEventSchema = z.object({
   id,
   statement_id: id,
-  actor_role: RoleEnum,
+  actor_role: ModerationActorRoleEnum,
   action: ModerationActionEnum,
   reason: z.string().default(''),
   created_at: ts
@@ -528,4 +529,5 @@ export type AiObservationKind = z.infer<typeof AiObservationKindEnum>
 export type AiObservationStatus = z.infer<typeof AiObservationStatusEnum>
 
 export type Role = z.infer<typeof RoleEnum>
+export type ModerationActorRole = z.infer<typeof ModerationActorRoleEnum>
 export type Visibility = z.infer<typeof VisibilityEnum>

@@ -244,6 +244,7 @@ describe('delib 보안 — 구조 무결성 (M-3/M-4/M-5)', () => {
     const events = await statements.listModerationEvents(adminContext(SID), st);
     expect(events.length).toBe(1);
     expect(events[0].action).toBe('flag');
-    expect(events[0].actor_role).toBe('instructor');
+    // operator gate 가 확인한 것은 세부 role 이 아니라 운영자 권한 집합이다.
+    expect(events[0].actor_role).toBe('operator');
   });
 });
