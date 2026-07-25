@@ -44,27 +44,28 @@ export async function GET(req: Request) {
       createdAt: s.created_at
     }
   })
-
-  const previewSourceId = `preview:${sessionId}`
-  const previewSegments: TranscriptLensSegmentInput[] = visibleStatements
-    .slice(-100)
-    .map((s, index) => ({
-      id: `preview:${s.id}`,
-      sourceId: previewSourceId,
-      groupId: s.group_id,
-      roundId: s.round_id,
-      speakerTag: s.group_id ? (groupById.get(s.group_id)?.label ?? '그룹') : '전체',
-      startedMs: index * 12_000,
-      endedMs: index * 12_000 + 8_000,
-      text: s.body,
-      confidence: null,
-      createdAt: s.created_at
-    }))
+  const previewSegments: TranscriptLensSegmentInput[] = visibleStatements.slice(-100).map((s, index) => ({
+    id: `preview:${s.id}`,
+    sourceId: `preview:${sessionId}`,
+    groupId: s.group_id,
+    roundId: s.round_id,
+    speakerTag: s.group_id ? (groupById.get(s.group_id)?.label ?? '그룹') : '전체',
+    startedMs: index * 12_000,
+    endedMs: index * 12_000 + 8_000,
+    text: s.body,
+    confidence: null,
+    createdAt: s.created_at
+  }))
 
   const mode = transcriptSegments.length > 0 ? 'transcript' : 'statement_preview'
   const lensSegments = mode === 'transcript' ? transcriptSegments : previewSegments
-  const recentSegments = lensSegments.slice(-40)
-  const summary = buildTranscriptLensSummary(lensSegments, groups.map((g) => ({ id: g.id, label: g.label })), { keywordLimit: 16 })
+  const recentSegments = lensSegments.slice(-12).map((s, index) => ({
+    id: `segment:${index}`,
+    speakerTag: s.speakerTag,
+    startedMs: s.startedMs,
+    text: s.text
+  }))
+  const summary = buildTranscriptLensSummary(lensSegments, groups.map((g) => ({ id: g.id, label: g.label })), { keywordLimit: 10 })
   const mirrorSegments: DialogueMirrorSegment[] = lensSegments.map((s) => ({
     id: s.id,
     groupId: s.groupId,
@@ -76,7 +77,6 @@ export async function GET(req: Request) {
   const mirror = buildDialogueStateMap(mirrorSegments)
   const nudges = buildDialogueNudges(mirror)
   const recording = readRecordingConsent(session.metadata)
-  const lastUpdatedAt = lensSegments.reduce<string | null>((max, s) => (max == null || s.createdAt > max ? s.createdAt : max), null)
 
   return NextResponse.json({
     ok: true,
@@ -84,22 +84,45 @@ export async function GET(req: Request) {
     modeLabel: mode === 'transcript' ? '전사 연결됨' : '전사 미연결 프리뷰',
     session: { id: session.id, title: session.title, date: session.date },
     activeRound: activeRound ? { id: activeRound.id, roundIndex: activeRound.round_index, title: activeRound.title } : null,
-    recording: {
-      active: recording.active,
-      consentAt: recording.consentAt,
-      offsiteProcessing: recording.offsiteProcessing
-    },
-    coverage: {
-      sourceCount: mode === 'transcript' ? sources.length : 0,
-      segmentCount: lensSegments.length,
-      visibleSegmentCount: recentSegments.length,
-      lastUpdatedAt
-    },
+    recording: { active: recording.active, consentAt: recording.consentAt },
     segments: recentSegments,
-    keywords: summary.keywords,
-    groupActivity: summary.groupActivity,
     pulse: summary.pulse,
-    mirror,
-    nudges
+    keywords: summary.keywords,
+    mirror: {
+      openQuestions: mirror.openQuestions.slice(0, 4).map((q, index) => ({
+        id: `question:${index}`,
+        text: q.text,
+        prompt: q.prompt,
+        status: q.status
+      })),
+      conceptThreads: mirror.conceptThreads.filter((c) => c.posture === 'needs_definition').slice(0, 4).map((c) => ({
+        term: c.term,
+        prompt: c.prompt,
+        contexts: c.contexts
+      })),
+      tensionAxes: mirror.tensionAxes.slice(0, 3).map((a) => ({
+        id: a.id,
+        label: a.label,
+        left: a.left,
+        right: a.right,
+        leftCount: a.leftCount,
+        rightCount: a.rightCount,
+        prompt: a.prompt
+      })),
+      commonGround: mirror.commonGround.slice(0, 4).map((g, index) => ({
+        id: `ground:${index}`,
+        label: g.label,
+        prompt: g.prompt,
+        mentionCount: g.segmentIds.length
+      })),
+      hygiene: mirror.hygiene
+    },
+    nudges: nudges.projector.slice(0, 5).map((n, index) => ({
+      id: `nudge:${index}`,
+      kind: n.kind,
+      label: n.label,
+      prompt: n.prompt,
+      priority: n.priority
+    }))
   })
 }

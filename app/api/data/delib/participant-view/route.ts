@@ -6,6 +6,8 @@ import { adminContext } from '@/lib/db/neonHelpers'
 import { PARTICIPANT_SESSION_COOKIE, readParticipantSession } from '@/lib/participantSession'
 import { toStatementCard } from '@/lib/delib/views'
 import { readRecordingConsent } from '@/lib/action/handlers/delib'
+import { buildDialogueStateMap, type DialogueMirrorSegment } from '@/lib/dialogue/stateMap'
+import { buildDialogueNudges } from '@/lib/dialogue/nudges'
 
 // 참가자 모바일 뷰 — 현재 라운드·내 그룹·제출 가능 여부·내가 낸 의견·투표 대상 statement 목록.
 // operator 게이트 제외(operatorGate EXEMPT). 신원은 서명된 참가자 쿠키에서만 검증한다.
@@ -54,7 +56,19 @@ const ParticipantViewSchema = z.object({
   participantCount: z.number(),
   anonymity: z.object({ available: z.boolean(), minParticipants: z.number() }),
   // 녹음·전사 동의 상태 — 참가자 화면 "녹음 중" 상시 배너 조건 (transcript-architecture §4).
-  recording: z.object({ active: z.boolean(), consentAt: z.string().nullable() })
+  recording: z.object({ active: z.boolean(), consentAt: z.string().nullable() }),
+  miniLens: z.object({
+    segmentCount: z.number(),
+    openQuestionCount: z.number(),
+    evidenceWaitingCount: z.number(),
+    definitionCheckCount: z.number(),
+    nudges: z.array(z.object({
+      id: z.string(),
+      kind: z.string(),
+      label: z.string(),
+      prompt: z.string()
+    }))
+  })
 })
 
 export async function GET() {
@@ -105,6 +119,20 @@ export async function GET() {
     .filter((s) => (activeRound ? s.round_id === activeRound.id || s.round_id == null : true))
     .map(toStatementCard)
 
+  const miniLensStatements = visibleToMe
+    .filter((s) => (activeRound ? s.round_id === activeRound.id || s.round_id == null : true))
+    .slice(-40)
+  const miniLensSegments: DialogueMirrorSegment[] = miniLensStatements.map((s, index) => ({
+    id: s.id,
+    groupId: s.group_id,
+    speakerTag: s.group_id === myGroupId ? '내 그룹' : '공유 발언',
+    startedMs: index * 12_000,
+    text: s.body,
+    createdAt: s.created_at
+  }))
+  const miniMirror = buildDialogueStateMap(miniLensSegments)
+  const miniNudges = buildDialogueNudges(miniMirror).participant.slice(0, 3)
+
   // 내 표만 조회 — 본인 participantId 로만 (거버넌스 §7-2 안전). statementId → vote 맵.
   const myVoteRows = await votes.listByParticipant(ctx, participantId)
   const myVotes: Record<string, 'agree' | 'disagree' | 'pass'> = {}
@@ -130,7 +158,14 @@ export async function GET() {
     recording: (() => {
       const rc = readRecordingConsent(session.metadata)
       return { active: rc.active, consentAt: rc.consentAt }
-    })()
+    })(),
+    miniLens: {
+      segmentCount: miniLensSegments.length,
+      openQuestionCount: miniMirror.openQuestions.filter((q) => q.status === 'open').length,
+      evidenceWaitingCount: miniMirror.evidenceConnections.filter((e) => e.posture === 'waiting').length,
+      definitionCheckCount: miniMirror.conceptThreads.filter((c) => c.posture === 'needs_definition').length,
+      nudges: miniNudges.map((n) => ({ id: n.id, kind: n.kind, label: n.label, prompt: n.prompt }))
+    }
   })
 
   return NextResponse.json(payload, {

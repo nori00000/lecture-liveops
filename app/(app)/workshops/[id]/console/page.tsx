@@ -9,6 +9,7 @@ import { Badge, Button, Card, CardHeader, Input, PageHeader, Select, Textarea } 
 import { VoteControls } from '@/components/delib/VoteControls'
 import { RecordingBanner } from '@/components/delib/RecordingBanner'
 import type { VoteValue } from '@/lib/db/schema'
+import type { DialogueNudge } from '@/lib/dialogue/nudges'
 import type {
   AppSubmissionGroupDistribution,
   AppSubmissionRoundDistribution,
@@ -87,6 +88,20 @@ type TranscriptLensData = {
   pulse?: { questions: number; agreements: number; disagreements: number; concerns: number }
 }
 
+type DialogueLiveData = {
+  ok: boolean
+  mode?: 'transcript' | 'statement_preview'
+  modeLabel?: string
+  mirror?: {
+    openQuestions: Array<{ status: 'open' | 'touched' }>
+    conceptThreads: Array<{ posture: 'steady' | 'needs_definition' }>
+    evidenceConnections: Array<{ posture: 'connected' | 'waiting' }>
+    tensionAxes: unknown[]
+    commonGround: unknown[]
+  }
+  nudges?: { operator: DialogueNudge[]; projector: DialogueNudge[]; participant: DialogueNudge[] }
+}
+
 // 콘솔 폴링 2~5초 (§3). 운영 조작 후엔 mutate()로 즉시 반영.
 const POLL_MS = 3000
 
@@ -94,6 +109,7 @@ export default function WorkshopConsolePage({ params }: { params: Promise<{ id: 
   const { id: sessionId } = use(params)
   const { data, mutate } = useSWR<ConsoleData>(`/api/data/delib/console-view?sessionId=${encodeURIComponent(sessionId)}`, swrFetcher, { refreshInterval: POLL_MS })
   const { data: transcriptLens } = useSWR<TranscriptLensData>(`/api/data/delib/transcript-view?sessionId=${encodeURIComponent(sessionId)}`, swrFetcher, { refreshInterval: POLL_MS })
+  const { data: dialogueLive } = useSWR<DialogueLiveData>(`/api/data/dialogue/live?sessionId=${encodeURIComponent(sessionId)}`, swrFetcher, { refreshInterval: POLL_MS })
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -152,6 +168,8 @@ export default function WorkshopConsolePage({ params }: { params: Promise<{ id: 
 
       {error ? <div role="alert" className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div> : null}
 
+      <OperatorCockpit sessionId={sessionId} data={data} dialogue={dialogueLive} ratioPct={ratioPct} />
+
       <TranscriptLensPanel data={transcriptLens} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -206,6 +224,72 @@ export default function WorkshopConsolePage({ params }: { params: Promise<{ id: 
         onSubmit={(input) => run('delib.submit_statement', input)}
         onVote={(input) => run('delib.vote_statement', input)}
       />
+    </div>
+  )
+}
+
+function OperatorCockpit({
+  sessionId,
+  data,
+  dialogue,
+  ratioPct
+}: {
+  sessionId: string
+  data: ConsoleData | undefined
+  dialogue: DialogueLiveData | undefined
+  ratioPct: number
+}) {
+  const mirror = dialogue?.mirror
+  const openQuestions = mirror?.openQuestions.filter((q) => q.status === 'open').length ?? 0
+  const evidenceWaiting = mirror?.evidenceConnections.filter((e) => e.posture === 'waiting').length ?? 0
+  const definitionChecks = mirror?.conceptThreads.filter((c) => c.posture === 'needs_definition').length ?? 0
+  const primary = dialogue?.nudges?.operator?.[0]
+
+  return (
+    <Card>
+      <CardHeader title="운영 Cockpit" hint={data?.activeRound ? `라운드 ${data.activeRound.round_index} 진행 중` : '라운드 대기'} />
+      <div className="p-4 space-y-4">
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          <CockpitSignal label="참가자" value={data?.participantCount ?? 0} />
+          <CockpitSignal label="투표 진행" value={`${ratioPct}%`} />
+          <CockpitSignal label="열린 질문" value={openQuestions} />
+          <CockpitSignal label="근거 대기" value={evidenceWaiting} />
+        </div>
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="rounded-md border border-border bg-bg p-3">
+            <div className="mb-1 text-xs text-textMute">지금 할 일</div>
+            <p className="text-base leading-relaxed text-text">
+              {primary?.prompt ?? (data?.activeRound ? '대화 상태가 더 쌓이면 다음 진행 지점이 표시됩니다.' : '라운드를 시작하면 대화 상태를 추적합니다.')}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {definitionChecks > 0 ? <Badge tone="warn">정의 확인 {definitionChecks}</Badge> : null}
+              {(mirror?.tensionAxes.length ?? 0) > 0 ? <Badge tone="info">갈림 축 {mirror?.tensionAxes.length}</Badge> : null}
+              {(mirror?.commonGround.length ?? 0) > 0 ? <Badge tone="accent">합의 후보 {mirror?.commonGround.length}</Badge> : null}
+              <Badge tone={dialogue?.mode === 'transcript' ? 'accent' : 'warn'}>{dialogue?.modeLabel ?? '전사 미연결 프리뷰'}</Badge>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:grid-cols-1">
+            <Link href={`/dialogue/${encodeURIComponent(sessionId)}/live`} target="_blank">
+              <Button className="w-full" variant="accent">Dialogue Lens 열기</Button>
+            </Link>
+            <Link href={`/dialogue/${encodeURIComponent(sessionId)}/projector`} target="_blank">
+              <Button className="w-full" variant="accent">Room Mirror 열기</Button>
+            </Link>
+            <Link href={`/workshops/${encodeURIComponent(sessionId)}/projector`} target="_blank">
+              <Button className="w-full">결과 프로젝터 열기</Button>
+            </Link>
+          </div>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+function CockpitSignal({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="min-h-[66px] rounded border border-border bg-bg p-3">
+      <div className="text-[11px] text-textDim">{label}</div>
+      <div className="mt-1 text-2xl font-semibold tabular-nums text-text">{value}</div>
     </div>
   )
 }

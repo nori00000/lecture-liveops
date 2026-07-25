@@ -45,7 +45,6 @@ export async function GET(req: Request) {
   const activeRound = rounds.find((r) => r.status === 'active') ?? null
   const previewSourceId = `preview:${sessionId}`
   const previewSegments: TranscriptLensSegmentInput[] = visibleStatements
-    .filter((s) => activeRound ? s.round_id === activeRound.id || s.round_id == null : true)
     .slice(-80)
     .map((s, index) => ({
       id: `preview:${s.id}`,

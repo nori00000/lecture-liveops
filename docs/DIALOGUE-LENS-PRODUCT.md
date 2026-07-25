@@ -58,15 +58,22 @@ AI는 평가자가 아니라 대화의 계기판이다.
 신규 surface:
 
 - `/dialogue/{sessionId}/live`: 대화 상태 시각화. 운영 버튼보다 전사 흐름과 mirror가 먼저 보인다.
+- `/dialogue/{sessionId}/projector`: 방 전체가 보는 Room Mirror. 공개 가능한 대화 상태와 다음 확인 지점만 표시한다.
 - `/api/data/dialogue/live`: Dialogue Lens 전용 read-only payload.
+- `/api/data/dialogue/projector`: projector-safe payload. 운영자용 세부 정보와 개인 단위 평가는 내려보내지 않는다.
 
 ## 4. 구현 상태
 
 현재 구현:
 
 - `lib/dialogue/stateMap.ts`: 규칙 기반 Conversation Mirror.
+- `lib/dialogue/nudges.ts`: 대화 상태에서 다음 행동 후보를 생성하고 operator/projector/participant 공개 범위를 분리.
 - `/api/data/dialogue/live`: 전사 segment 또는 statement preview를 mirror payload로 변환.
+- `/api/data/dialogue/projector`: Room Mirror 전용 payload.
 - `/dialogue/{sessionId}/live`: 대화 흐름 + 열린 질문/정의 확인/근거 연결/갈림 축/합의 후보 화면.
+- `/dialogue/{sessionId}/projector`: 전체 공유용 Room Mirror.
+- `/p/workshop`: 참가자 Mini Lens. 열린 질문/근거 이어보기/정의 확인 후보를 작은 행동 신호로 표시.
+- `/workshops/{sessionId}/console`: 운영 Cockpit. 현재 라운드에서 확인할 지점과 Room Mirror 진입을 상단에 배치.
 
 아직 미구현:
 
@@ -78,9 +85,10 @@ AI는 평가자가 아니라 대화의 계기판이다.
 ## 5. 다음 개발 순서
 
 1. 실제 대화형 transcript demo seed 추가.
-2. `/dialogue/{sessionId}/live` 화면을 현장 projector 크기로 검증.
-3. 열린 질문/정의 확인 품질을 파일럿 transcript로 조정.
-4. LLM은 `확인 후보` 생성으로만 도입하고, public projection은 진행자 승인 후에만 허용.
+2. Room Mirror와 Participant Mini Lens를 현장 크기/모바일 크기로 검증.
+3. 열린 질문/정의 확인/근거 이어보기 nudge 품질을 파일럿 transcript로 조정.
+4. 진행자 승인/숨김 레이어를 추가해 projector 공개 정책을 고정.
+5. LLM은 `확인 후보` 생성으로만 도입하고, public projection은 진행자 승인 후에만 허용.
 
 ## 6. Must Never Happen
 

@@ -34,6 +34,13 @@ type Data = {
   participantCount?: number
   anonymity?: { available: boolean; minParticipants: number }
   recording?: { active: boolean; consentAt: string | null }
+  miniLens?: {
+    segmentCount: number
+    openQuestionCount: number
+    evidenceWaitingCount: number
+    definitionCheckCount: number
+    nudges: Array<{ id: string; kind: string; label: string; prompt: string }>
+  }
 }
 
 // 참가자용 폴링: 개별 폰 결과는 저부하 원칙(§3, N3)에 맞춰 12초 간격.
@@ -146,6 +153,8 @@ export default function ParticipantWorkshopPage() {
         {/* 녹음·전사 상시 배너 — 동의된 세션에서만 노출 */}
         <RecordingBanner active={data?.recording?.active === true} audience="participant" />
 
+        <ParticipantMiniLens lens={data?.miniLens} />
+
         {/* §7-1: 익명 최소 임계 안내 */}
         {data?.anonymity && !data.anonymity.available ? (
           <div role="status" className="mb-4 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn">
@@ -181,7 +190,7 @@ export default function ParticipantWorkshopPage() {
 
         {/* 의견 제출 */}
         <Card className="mb-4">
-          <CardHeader title="의견 제출" hint={canSubmit ? undefined : '라운드 대기 중'} />
+          <CardHeader title="대화에 보태기" hint={canSubmit ? undefined : '라운드 대기 중'} />
           <div className="p-4 space-y-2">
             <label htmlFor="delib-statement-input" className="sr-only">의견 입력</label>
             <Textarea
@@ -189,13 +198,13 @@ export default function ParticipantWorkshopPage() {
               value={body}
               onChange={(e) => setBody(e.target.value)}
               rows={3}
-              placeholder={canSubmit ? '이 라운드에 대한 의견을 적어주세요' : '라운드가 시작되면 의견을 낼 수 있습니다'}
+              placeholder={canSubmit ? '질문에 답하거나, 근거를 이어주거나, 용어의 의미를 맞춰주세요' : '라운드가 시작되면 대화에 보탤 수 있습니다'}
               disabled={!canSubmit || busy}
             />
             {/* Q1: 근거 유형 자기 태깅 — 선택사항, 기본값 없음. 판정이 아니라 본인 표기다. */}
             <div className="pt-1">
               <div className="text-xs text-textDim mb-1">
-                이 주장의 근거 <span className="text-textMute">(선택사항 — 고르지 않아도 제출됩니다)</span>
+                보탠 말의 바탕 <span className="text-textMute">(선택사항 — 고르지 않아도 제출됩니다)</span>
               </div>
               <EvidenceKindControls
                 idBase="evidence-kind"
@@ -206,7 +215,7 @@ export default function ParticipantWorkshopPage() {
             </div>
             <div className="flex justify-end">
               <Button variant="accent" onClick={submitStatement} disabled={!canSubmit || busy || !body.trim()}>
-                {busy ? '제출 중' : '의견 제출'}
+                {busy ? '제출 중' : '대화에 보태기'}
               </Button>
             </div>
           </div>
@@ -252,5 +261,44 @@ export default function ParticipantWorkshopPage() {
         </Card>
       </div>
     </main>
+  )
+}
+
+function ParticipantMiniLens({ lens }: { lens: Data['miniLens'] }) {
+  const nudges = lens?.nudges ?? []
+  return (
+    <Card className="mb-4">
+      <CardHeader title="지금 대화에서 해볼 일" hint={`${lens?.segmentCount ?? 0}개 발언 기준`} />
+      <div className="p-4 space-y-3">
+        <div className="grid grid-cols-3 gap-2">
+          <MiniSignal label="열린 질문" value={lens?.openQuestionCount ?? 0} tone="text-info" />
+          <MiniSignal label="근거 이어보기" value={lens?.evidenceWaitingCount ?? 0} tone="text-warn" />
+          <MiniSignal label="정의 확인" value={lens?.definitionCheckCount ?? 0} tone="text-accent" />
+        </div>
+        {nudges.length === 0 ? (
+          <p className="rounded border border-border bg-bg px-3 py-4 text-center text-sm text-textDim">
+            대화가 더 쌓이면 다음에 보탤 지점이 표시됩니다.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {nudges.map((n) => (
+              <li key={n.id} className="rounded border border-border bg-bg p-3">
+                <div className="mb-1"><Badge tone={n.kind === 'ask_evidence' ? 'warn' : n.kind === 'define_term' ? 'accent' : 'info'}>{n.label}</Badge></div>
+                <p className="text-sm leading-relaxed text-text">{n.prompt}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function MiniSignal({ label, value, tone }: { label: string; value: number; tone: string }) {
+  return (
+    <div className="min-h-[70px] rounded border border-border bg-bg p-2">
+      <div className="text-[11px] leading-tight text-textDim">{label}</div>
+      <div className={`mt-1 text-2xl font-semibold tabular-nums ${tone}`}>{value}</div>
+    </div>
   )
 }
