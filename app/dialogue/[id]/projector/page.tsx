@@ -45,6 +45,12 @@ export default function DialogueProjectorPage({ params }: { params: Promise<{ id
   const primaryNudge = nudges[0]
   const mirror = data?.mirror
   const segments = data?.segments ?? []
+  const statusCounts = {
+    questions: mirror?.openQuestions.length ?? 0,
+    concepts: mirror?.conceptThreads.length ?? 0,
+    axes: mirror?.tensionAxes.length ?? 0,
+    grounds: mirror?.commonGround.length ?? 0
+  }
 
   return (
     <main className="min-h-screen bg-bg text-text">
@@ -62,11 +68,18 @@ export default function DialogueProjectorPage({ params }: { params: Promise<{ id
           <p className="max-w-xl text-sm leading-relaxed text-textMute">{mirror?.hygiene.participantFacingCopy ?? 'AI는 발언자를 평가하지 않고, 대화에서 확인해 볼 상태만 보여줍니다.'}</p>
         </header>
 
+        <section className="grid grid-cols-4 gap-2 xl:hidden" aria-label="대화 상태 요약">
+          <CompactSignal label="질문" value={statusCounts.questions} />
+          <CompactSignal label="정의" value={statusCounts.concepts} />
+          <CompactSignal label="갈림" value={statusCounts.axes} />
+          <CompactSignal label="합의" value={statusCounts.grounds} />
+        </section>
+
         <section className="grid flex-1 grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(420px,0.65fr)]">
           <div className="space-y-5">
-            <section className="rounded-md border border-accentDim/50 bg-accentDim/10 p-5">
+            <section className="rounded-md border border-accentDim/50 bg-accentDim/10 p-4 sm:p-5">
               <div className="text-sm text-accent">다음에 확인할 지점</div>
-              <div className="mt-2 min-h-[116px] text-3xl font-semibold leading-snug">
+              <div className="mt-2 min-h-[92px] text-2xl font-semibold leading-snug sm:min-h-[116px] sm:text-3xl">
                 {primaryNudge ? primaryNudge.prompt : '대화가 더 쌓이면 함께 확인할 지점이 표시됩니다.'}
               </div>
             </section>
@@ -130,7 +143,7 @@ export default function DialogueProjectorPage({ params }: { params: Promise<{ id
 
 function MirrorColumn({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
   return (
-    <section className="min-h-[260px] rounded-md border border-border bg-surface">
+    <section className="min-h-[220px] rounded-md border border-border bg-surface sm:min-h-[260px]">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <h2 className="text-base font-medium">{title}</h2>
         <span className="text-sm text-textMute">{count}</span>
@@ -139,6 +152,15 @@ function MirrorColumn({ title, count, children }: { title: string; count: number
         {count === 0 ? <p className="py-10 text-center text-sm text-textDim">아직 표시할 상태가 없습니다.</p> : children}
       </div>
     </section>
+  )
+}
+
+function CompactSignal({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="min-h-[58px] rounded border border-border bg-surface p-2">
+      <div className="text-[11px] text-textDim">{label}</div>
+      <div className="mt-1 text-xl font-semibold tabular-nums text-text">{value}</div>
+    </div>
   )
 }
 

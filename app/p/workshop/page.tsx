@@ -75,6 +75,9 @@ export default function ParticipantWorkshopPage() {
   const sessionId = data?.session?.id
   const activeRound = data?.activeRound ?? null
   const canSubmit = Boolean(data?.canSubmit && sessionId)
+  const nextParticipantAction = activeRound
+    ? '질문에 답하거나, 근거를 이어주거나, 용어의 의미를 맞춰주세요.'
+    : '진행자가 라운드를 시작할 때까지 대화 상태를 함께 보고 기다립니다.'
 
   async function submitStatement() {
     if (!sessionId || !body.trim()) return
@@ -153,7 +156,7 @@ export default function ParticipantWorkshopPage() {
         {/* 녹음·전사 상시 배너 — 동의된 세션에서만 노출 */}
         <RecordingBanner active={data?.recording?.active === true} audience="participant" />
 
-        <ParticipantMiniLens lens={data?.miniLens} />
+        <ParticipantMiniLens lens={data?.miniLens} activeRound={activeRound} />
 
         {/* §7-1: 익명 최소 임계 안내 */}
         {data?.anonymity && !data.anonymity.available ? (
@@ -177,13 +180,19 @@ export default function ParticipantWorkshopPage() {
           <CardHeader title="현재 라운드" />
           <div className="p-4">
             {activeRound ? (
-              <div className="flex items-center gap-2 flex-wrap">
-                <Badge tone="accent">라운드 {activeRound.roundIndex}</Badge>
-                <span className="text-sm text-text">{activeRound.title || '(제목 없음)'}</span>
-                <Badge tone="neutral">{activeRound.mode === 'breakout' ? '분임' : '전체'}</Badge>
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge tone="accent">라운드 {activeRound.roundIndex}</Badge>
+                  <span className="text-sm text-text">{activeRound.title || '(제목 없음)'}</span>
+                  <Badge tone="neutral">{activeRound.mode === 'breakout' ? '분임' : '전체'}</Badge>
+                </div>
+                <p className="text-sm text-textDim">{nextParticipantAction}</p>
               </div>
             ) : (
-              <p className="text-sm text-textDim">진행 중인 라운드가 없습니다. 진행자가 라운드를 시작하면 여기에 표시됩니다.</p>
+              <div className="space-y-2">
+                <p className="text-sm text-textDim">아직 진행 중인 라운드가 없습니다.</p>
+                <p className="text-xs text-textMute">대기 중에는 제출·투표가 잠시 닫힙니다. 라운드가 시작되면 이 화면이 자동으로 바뀝니다.</p>
+              </div>
             )}
           </div>
         </Card>
@@ -198,7 +207,7 @@ export default function ParticipantWorkshopPage() {
               value={body}
               onChange={(e) => setBody(e.target.value)}
               rows={3}
-              placeholder={canSubmit ? '질문에 답하거나, 근거를 이어주거나, 용어의 의미를 맞춰주세요' : '라운드가 시작되면 대화에 보탤 수 있습니다'}
+              placeholder={canSubmit ? '예: 야간 연장이 필요하다면, 어떤 이용자 경험이나 자료가 있나요?' : '라운드가 시작되면 대화에 보탤 수 있습니다'}
               disabled={!canSubmit || busy}
             />
             {/* Q1: 근거 유형 자기 태깅 — 선택사항, 기본값 없음. 판정이 아니라 본인 표기다. */}
@@ -264,12 +273,19 @@ export default function ParticipantWorkshopPage() {
   )
 }
 
-function ParticipantMiniLens({ lens }: { lens: Data['miniLens'] }) {
+function ParticipantMiniLens({ lens, activeRound }: { lens: Data['miniLens']; activeRound: Data['activeRound'] }) {
   const nudges = lens?.nudges ?? []
+  const primary = nudges[0]
   return (
     <Card className="mb-4">
       <CardHeader title="지금 대화에서 해볼 일" hint={`${lens?.segmentCount ?? 0}개 발언 기준`} />
       <div className="p-4 space-y-3">
+        <div className="rounded-md border border-accentDim/40 bg-accentDim/10 px-3 py-3">
+          <div className="text-[11px] text-accent">다음 행동</div>
+          <p className="mt-1 text-sm leading-relaxed text-text">
+            {primary?.prompt ?? (activeRound ? '먼저 한 문장으로 의견을 보태고, 다른 사람의 근거를 이어서 확인해 보세요.' : '라운드가 시작되면 질문·근거·정의 확인 지점이 여기에 표시됩니다.')}
+          </p>
+        </div>
         <div className="grid grid-cols-3 gap-2">
           <MiniSignal label="열린 질문" value={lens?.openQuestionCount ?? 0} tone="text-info" />
           <MiniSignal label="근거 이어보기" value={lens?.evidenceWaitingCount ?? 0} tone="text-warn" />
@@ -277,7 +293,7 @@ function ParticipantMiniLens({ lens }: { lens: Data['miniLens'] }) {
         </div>
         {nudges.length === 0 ? (
           <p className="rounded border border-border bg-bg px-3 py-4 text-center text-sm text-textDim">
-            대화가 더 쌓이면 다음에 보탤 지점이 표시됩니다.
+            아직 특정 지점은 없습니다. 지금은 짧게 말하고, 이유를 한 문장 덧붙이면 충분합니다.
           </p>
         ) : (
           <ul className="space-y-2">
