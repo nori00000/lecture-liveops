@@ -37,6 +37,7 @@ export default async function WorkshopsListPage() {
                 <span className="text-xs text-textMute">{companyName}</span>
               </div>
               <div className="flex flex-wrap gap-2 pt-1">
+                <Link href={`/dialogue/${session.id}/live`}><Button size="sm" variant="accent">Dialogue Lens</Button></Link>
                 <Link href={`/workshops/${session.id}/console`}><Button size="sm" variant="accent">콘솔</Button></Link>
                 <Link href={`/workshops/${session.id}/settings`}><Button size="sm">설정</Button></Link>
                 <Link href={`/workshops/${session.id}/projector`}><Button size="sm">프로젝터</Button></Link>

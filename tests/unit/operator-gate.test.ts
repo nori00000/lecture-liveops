@@ -55,9 +55,11 @@ describe('operator gate', () => {
       '/workshops/se-001/console',
       '/workshops/se-001/settings',
       '/workshops/se-001/projector',
+      '/dialogue/se-001/live',
       '/api/data/delib/console-view',
       '/api/data/delib/projector-view',
-      '/api/data/delib/workshop'
+      '/api/data/delib/workshop',
+      '/api/data/dialogue/live'
     ]) {
       expect(isOperatorProtectedPath(p), p).toBe(true)
     }
