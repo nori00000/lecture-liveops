@@ -62,7 +62,7 @@ export default function DialogueProjectorPage({ params }: { params: Promise<{ id
               <Badge tone={data?.recording?.active ? 'info' : 'neutral'}>{data?.recording?.active ? '녹음 동의 ON' : '녹음 동의 OFF'}</Badge>
               {data?.activeRound ? <Badge tone="neutral">라운드 {data.activeRound.roundIndex}</Badge> : <Badge tone="neutral">라운드 없음</Badge>}
             </div>
-            <h1 className="text-3xl font-semibold leading-tight">Room Mirror</h1>
+            <h1 className="text-3xl font-semibold leading-tight">대화 거울</h1>
             <p className="mt-1 text-base text-textDim">{data?.session ? `${data.session.title} · ${data.session.date}` : '대화 상태를 불러오는 중...'}</p>
           </div>
           <p className="max-w-xl text-sm leading-relaxed text-textMute">{mirror?.hygiene.participantFacingCopy ?? 'AI는 발언자를 평가하지 않고, 대화에서 확인해 볼 상태만 보여줍니다.'}</p>
@@ -113,8 +113,8 @@ export default function DialogueProjectorPage({ params }: { params: Promise<{ id
               <div className="mb-3 text-sm font-medium">대화 신호</div>
               <div className="grid grid-cols-2 gap-3">
                 <Pulse label="질문" value={pulse.questions} className="bg-info" />
-                <Pulse label="동의" value={pulse.agreements} className="bg-accent" />
-                <Pulse label="반대" value={pulse.disagreements} className="bg-danger" />
+                <Pulse label="공통 표현" value={pulse.agreements} className="bg-accent" />
+                <Pulse label="다른 관점" value={pulse.disagreements} className="bg-danger" />
                 <Pulse label="우려" value={pulse.concerns} className="bg-warn" />
               </div>
             </section>

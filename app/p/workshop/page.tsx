@@ -75,6 +75,8 @@ export default function ParticipantWorkshopPage() {
   const sessionId = data?.session?.id
   const activeRound = data?.activeRound ?? null
   const canSubmit = Boolean(data?.canSubmit && sessionId)
+  const votable = data?.votable ?? []
+  const myStatements = data?.myStatements ?? []
   const nextParticipantAction = activeRound
     ? '질문에 답하거나, 근거를 이어주거나, 용어의 의미를 맞춰주세요.'
     : '진행자가 라운드를 시작할 때까지 대화 상태를 함께 보고 기다립니다.'
@@ -150,7 +152,7 @@ export default function ParticipantWorkshopPage() {
         <PageHeader
           title="숙의 워크숍"
           desc={data?.session ? `${data.session.title} · ${data.session.date}` : '불러오는 중...'}
-          right={data?.myGroupId ? <Badge tone="info">내 그룹 배정됨</Badge> : <Badge tone="neutral">그룹 미배정</Badge>}
+          right={data?.myGroupId ? <Badge tone="info">내 그룹 배정됨</Badge> : <Badge tone="neutral">개별 참여</Badge>}
         />
 
         {/* 녹음·전사 상시 배너 — 동의된 세션에서만 노출 */}
@@ -200,74 +202,85 @@ export default function ParticipantWorkshopPage() {
         {/* 의견 제출 */}
         <Card className="mb-4">
           <CardHeader title="대화에 보태기" hint={canSubmit ? undefined : '라운드 대기 중'} />
-          <div className="p-4 space-y-2">
-            <label htmlFor="delib-statement-input" className="sr-only">의견 입력</label>
-            <Textarea
-              id="delib-statement-input"
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              rows={3}
-              placeholder={canSubmit ? '예: 야간 연장이 필요하다면, 어떤 이용자 경험이나 자료가 있나요?' : '라운드가 시작되면 대화에 보탤 수 있습니다'}
-              disabled={!canSubmit || busy}
-            />
-            {/* Q1: 근거 유형 자기 태깅 — 선택사항, 기본값 없음. 판정이 아니라 본인 표기다. */}
-            <div className="pt-1">
-              <div className="text-xs text-textDim mb-1">
-                보탠 말의 바탕 <span className="text-textMute">(선택사항 — 고르지 않아도 제출됩니다)</span>
-              </div>
-              <EvidenceKindControls
-                idBase="evidence-kind"
-                value={evidenceKind}
-                onChange={setEvidenceKind}
-                disabled={!canSubmit || busy}
+          {canSubmit ? (
+            <div className="p-4 space-y-2">
+              <label htmlFor="delib-statement-input" className="sr-only">의견 입력</label>
+              <Textarea
+                id="delib-statement-input"
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                rows={3}
+                placeholder="예: 야간 연장이 필요하다면, 어떤 이용자 경험이나 자료가 있나요?"
+                disabled={busy}
               />
-            </div>
-            <div className="flex justify-end">
-              <Button variant="accent" onClick={submitStatement} disabled={!canSubmit || busy || !body.trim()}>
-                {busy ? '제출 중' : '대화에 보태기'}
-              </Button>
-            </div>
-          </div>
-        </Card>
-
-        {/* 투표 대상 목록 */}
-        <Card className="mb-4">
-          <CardHeader title="투표" hint={`${data?.votable?.length ?? 0}건`} />
-          <ul className="divide-y divide-border">
-            {(data?.votable ?? []).length === 0 ? (
-              <li className="px-4 py-6 text-sm text-textDim text-center">투표할 의견이 아직 없습니다.</li>
-            ) : null}
-            {(data?.votable ?? []).map((s) => (
-              <li key={s.id} className="px-4 py-3 space-y-2">
-                <p className="text-sm text-text break-words">{s.body}</p>
-                <VoteControls
-                  idBase={`vote-${s.id}`}
-                  value={data?.myVotes?.[s.id]}
-                  onVote={(v) => castVote(s.id, v)}
-                  disabled={pendingVotes.has(s.id)}
+              {/* Q1: 근거 유형 자기 태깅 — 선택사항, 기본값 없음. 판정이 아니라 본인 표기다. */}
+              <div className="pt-1">
+                <div className="text-xs text-textDim mb-1">
+                  보탠 말의 바탕 <span className="text-textMute">(선택사항 — 고르지 않아도 제출됩니다)</span>
+                </div>
+                <EvidenceKindControls
+                  idBase="evidence-kind"
+                  value={evidenceKind}
+                  onChange={setEvidenceKind}
+                  disabled={busy}
                 />
-              </li>
-            ))}
-          </ul>
+              </div>
+              <div className="flex justify-end">
+                <Button variant="accent" onClick={submitStatement} disabled={busy || !body.trim()}>
+                  {busy ? '제출 중' : '대화에 보태기'}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="p-4">
+              <div className="rounded-md border border-border bg-bg px-3 py-4">
+                <div className="text-sm font-medium text-text">라운드가 시작되면 입력창이 열립니다.</div>
+                <p className="mt-1 text-xs leading-relaxed text-textDim">
+                  기다리는 동안에는 Room Mirror의 질문·근거·정의 신호를 보고, 말하고 싶은 한 문장을 마음속으로 준비해 주세요.
+                </p>
+              </div>
+            </div>
+          )}
         </Card>
 
-        {/* 내가 낸 의견 */}
-        <Card>
-          <CardHeader title="내가 낸 의견" hint={`${data?.myStatements?.length ?? 0}건`} />
-          <ul className="divide-y divide-border">
-            {(data?.myStatements ?? []).length === 0 ? (
-              <li className="px-4 py-6 text-sm text-textDim text-center">아직 제출한 의견이 없습니다.</li>
-            ) : null}
-            {(data?.myStatements ?? []).map((s) => (
-              <li key={s.id} className="px-4 py-2 flex items-start gap-2">
-                <Badge tone={s.moderationState === 'visible' ? 'accent' : 'warn'}>
-                  {s.moderationState === 'visible' ? '게시됨' : s.moderationState === 'flagged' ? '검토중' : '숨김'}
-                </Badge>
-                <span className="text-sm break-words">{s.body}</span>
-              </li>
-            ))}
-          </ul>
-        </Card>
+        {votable.length > 0 ? (
+          <Card className="mb-4">
+            <CardHeader title="투표" hint={`${votable.length}건`} />
+            <ul className="divide-y divide-border">
+              {votable.map((s) => (
+                <li key={s.id} className="px-4 py-3 space-y-2">
+                  <p className="text-sm text-text break-words">{s.body}</p>
+                  <VoteControls
+                    idBase={`vote-${s.id}`}
+                    value={data?.myVotes?.[s.id]}
+                    onVote={(v) => castVote(s.id, v)}
+                    disabled={pendingVotes.has(s.id)}
+                  />
+                </li>
+              ))}
+            </ul>
+          </Card>
+        ) : null}
+
+        {myStatements.length > 0 ? (
+          <Card>
+            <CardHeader title="내가 낸 의견" hint={`${myStatements.length}건`} />
+            <ul className="divide-y divide-border">
+              {myStatements.map((s) => (
+                <li key={s.id} className="px-4 py-2 flex items-start gap-2">
+                  <Badge tone={s.moderationState === 'visible' ? 'accent' : 'warn'}>
+                    {s.moderationState === 'visible' ? '게시됨' : s.moderationState === 'flagged' ? '검토중' : '숨김'}
+                  </Badge>
+                  <span className="text-sm break-words">{s.body}</span>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        ) : (
+          <div className="rounded-md border border-border bg-surface px-4 py-3 text-xs text-textMute">
+            아직 제출·투표 기록이 없습니다. 라운드가 시작되면 이 영역에 내 참여 기록이 쌓입니다.
+          </div>
+        )}
       </div>
     </main>
   )
