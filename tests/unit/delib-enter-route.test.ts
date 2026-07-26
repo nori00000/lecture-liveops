@@ -13,7 +13,7 @@ beforeAll(() => {
 
 import { POST } from '@/app/api/p/enter/route';
 import { PARTICIPANT_SESSION_COOKIE, readParticipantSession } from '@/lib/participantSession';
-import { participants } from '@/lib/db/repo';
+import { accessKeys, delibGroups, participants } from '@/lib/db/repo';
 import { adminContext } from '@/lib/db/neonHelpers';
 import { resetStore } from '@/lib/db/fixture/store';
 
@@ -44,6 +44,7 @@ describe('/api/p/enter — participant 신원 서버 배선', () => {
     const body = await res.clone().json();
     expect(body.ok).toBe(true);
     expect(body.sessionId).toBe(SID);
+    expect(body.redirectTo).toBe('/p/dashboard');
 
     const token = cookieToken(res);
     expect(token).toBeTruthy();
@@ -65,6 +66,30 @@ describe('/api/p/enter — participant 신원 서버 배선', () => {
     expect(p1).toBe(p2);
     const all = await participants.list(adminContext(SID), SID);
     expect(all.length).toBe(1); // 두 번 입장해도 participant 는 1개
+  });
+
+  it('access key scope에 groupId가 있으면 첫 입장 때 자동으로 그룹 배정하고 쿠키에 심는다', async () => {
+    const ctx = adminContext(SID);
+    const group = await delibGroups.upsert(ctx, { session_id: SID, label: '데모 조', topic: '접속 테스트' });
+    const issued = await accessKeys.issue(ctx, {
+      session_id: SID,
+      role: 'participant',
+      expires_at: '2026-12-31T23:59:00+09:00',
+      rawKey: 'scoped-enter-key',
+      scope: { groupId: group.id }
+    });
+
+    const res = await POST(enterReq(issued.raw_key));
+    const body = await res.clone().json();
+    expect(res.status).toBe(200);
+    expect(body.redirectTo).toBe('/p/workshop');
+    const session = readParticipantSession(cookieToken(res));
+    expect(session?.groupId).toBe(group.id);
+
+    const participant = await participants.findByAccessKeyId(ctx, issued.id);
+    expect(participant).toBeTruthy();
+    const membership = await delibGroups.findMembershipByParticipant(ctx, participant!.id);
+    expect(membership?.group_id).toBe(group.id);
   });
 
   it('잘못된 access key 는 403 + 쿠키 미발급', async () => {

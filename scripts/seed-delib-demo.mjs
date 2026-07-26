@@ -13,7 +13,7 @@
 //     anon 버킷(30/분)에 걸리므로, 시딩용 dev 서버는 LIVEOPS_RATE_LIMIT_DISABLE=1 로 띄우길 권장한다.
 //     (미설정이어도 429 를 지수 백오프로 재시도하지만 매우 느리다.)
 //   모드:  server 가 fixture 면 fixture store 에, DATABASE_URL 이 설정된 Neon 이면 Neon 에 seed 된다(서버가 결정).
-//   안전:  신규 서버 액션을 만들지 않고 기존 delib.* / liveops.* 액션만 호출한다. 외부 endpoint 호출 0.
+//   안전:  delib.* / liveops.* 액션만 호출한다. 외부 endpoint 호출 0.
 //
 // 실행 후: 운영자가 콘솔·프로젝터·리포트를 바로 볼 수 있는 접속 정보를 출력한다.
 
@@ -181,6 +181,20 @@ async function seedDemo() {
   }
   log('INFO', 'groups', `${groupIds.length}개 분임`)
 
+  // 3-b. 데모용 참가자 접속 키. 실제 participant row 는 /p/enter 입장 시 생성된다.
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+  const demoKeys = []
+  for (let i = 0; i < groupIds.length; i++) {
+    const r = await call('delib.issue_participant_access_key', 'instructor', {
+      sessionId,
+      groupId: groupIds[i],
+      rawKey: `${RUN_ID}-group-${i + 1}-participant`,
+      expiresAt
+    }, scope)
+    demoKeys.push({ label: GROUPS[i].label, topic: GROUPS[i].topic, rawKey: r.data.rawKey })
+  }
+  log('INFO', 'access keys', `${demoKeys.length}개 데모 참가자 키 발급`)
+
   // 4. 참가자 24명 등록 + 그룹 배정 (p[i] → 그룹 i%4)
   const pids = []
   const pidsByGroup = [[], [], [], []]
@@ -253,7 +267,7 @@ async function seedDemo() {
   await call('delib.publish_snapshot', 'instructor', { snapshotId: snap.data.snapshotId }, scope)
   log('INFO', 'snapshot', `발행 완료 (발언 ${snap.data.statementCount}개 집계)`)
 
-  return { sessionId, participants: pids.length, statements: STATEMENTS.length, votes: voteCount, snapshotId: snap.data.snapshotId }
+  return { sessionId, participants: pids.length, statements: STATEMENTS.length, votes: voteCount, snapshotId: snap.data.snapshotId, demoKeys }
 }
 
 ;(async () => {
@@ -289,7 +303,11 @@ async function seedDemo() {
   console.log(`운영자 콘솔      : ${BASE}/workshops/${result.sessionId}/console`)
   console.log(`워크숍 설정      : ${BASE}/workshops/${result.sessionId}/settings`)
   console.log(`프로젝터 결과판  : ${BASE}/workshops/${result.sessionId}/projector`)
-  console.log(`참가자 입장      : ${BASE}/p/enter  (QR 배포용 — access key 발급은 콘솔에서)`)
+  console.log(`참가자 입장      : ${BASE}/p/enter`)
+  console.log(`참가자 데모 키   : ${result.demoKeys[0]?.rawKey ?? '(발급 실패)'}`)
+  for (const key of result.demoKeys) {
+    console.log(`  ${key.label.padEnd(4)} ${key.topic.padEnd(14)} ${key.rawKey}`)
+  }
   console.log(``)
   console.log(`리포트 다운로드 ${opGate}:`)
   for (const fmt of ['md', 'html', 'xlsx']) {

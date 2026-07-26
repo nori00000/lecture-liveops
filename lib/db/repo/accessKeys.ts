@@ -78,7 +78,7 @@ export const accessKeys = {
     const all = await accessKeys.list(ctx, sessionId)
     return all.map(({ key_hash, ...rest }) => ({ ...rest, has_hash: Boolean(key_hash) }))
   },
-  async issue(ctx: RlsContext, input: { session_id: string; role: Role; expires_at: string; rawKey: string }): Promise<IssuedAccessKey> {
+  async issue(ctx: RlsContext, input: { session_id: string; role: Role; expires_at: string; rawKey: string; scope?: Record<string, unknown> }): Promise<IssuedAccessKey> {
     const raw_key = withAccessKeyPrefix(input.rawKey)
     const key_prefix = accessKeyPrefix(raw_key)
     const key_hash = await bcrypt.hash(raw_key, accessKeyHashCost())
@@ -89,7 +89,7 @@ export const accessKeys = {
       key_hash,
       expires_at: input.expires_at,
       revoked_at: null,
-      scope: {},
+      scope: input.scope ?? {},
       key_prefix,
       raw_key
     }

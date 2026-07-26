@@ -43,6 +43,7 @@ const MATRIX: Record<string, Role[]> = {
   'delib.register_participant': ['admin', 'instructor', 'assistant'],
   'delib.upsert_group': ['admin', 'instructor', 'assistant'],
   'delib.assign_participant': ['admin', 'instructor', 'assistant'],
+  'delib.issue_participant_access_key': ['admin', 'instructor', 'assistant'],
   'delib.start_round': ['admin', 'instructor', 'assistant'],
   'delib.submit_statement': ['admin', 'instructor', 'assistant', 'participant'],
   'delib.moderate_statement': ['admin', 'instructor', 'assistant'],

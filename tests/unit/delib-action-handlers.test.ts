@@ -19,6 +19,7 @@ import {
   registerParticipant,
   upsertGroup,
   assignParticipant,
+  issueParticipantAccessKey,
   startRound,
   submitStatement,
   moderateStatement,
@@ -26,7 +27,7 @@ import {
   computeSnapshot,
   publishSnapshot
 } from '@/lib/action/handlers/delib';
-import { votes, landscape } from '@/lib/db/repo';
+import { accessKeys, votes, landscape } from '@/lib/db/repo';
 import { adminContext } from '@/lib/db/neonHelpers';
 import { resetStore } from '@/lib/db/fixture/store';
 import type { AxActionEnvelope } from '@/lib/action/envelope';
@@ -120,6 +121,25 @@ describe('delib action handlers (fixture mode)', () => {
     const gid = (g.data as { groupId: string }).groupId;
     const r = await assignParticipant({ envelope: env('delib.assign_participant', 'instructor', { participantId: pid, groupId: gid }) });
     expect((r.data as { participantId: string; groupId: string })).toEqual({ participantId: pid, groupId: gid });
+  });
+
+  it('issueParticipantAccessKey — 참가자 row 생성 없이 그룹 scope가 있는 키만 발급', async () => {
+    const g = await upsertGroup({ envelope: env('delib.upsert_group', 'instructor', { sessionId: SID, label: '접속 조' }) });
+    const gid = (g.data as { groupId: string }).groupId;
+    const r = await issueParticipantAccessKey({
+      envelope: env('delib.issue_participant_access_key', 'instructor', {
+        sessionId: SID,
+        groupId: gid,
+        rawKey: 'demo-participant-entry',
+        expiresAt: '2026-12-31T23:59:00+09:00'
+      })
+    });
+
+    const data = r.data as { accessKeyId: string; rawKey: string; groupId: string };
+    expect(data.accessKeyId).toMatch(/^ak-/);
+    expect(data.rawKey).toMatch(/^[A-Za-z0-9_-]{8}\.demo-participant-entry$/);
+    expect(data.groupId).toBe(gid);
+    await expect(accessKeys.verify(data.rawKey)).resolves.toMatchObject({ id: data.accessKeyId, scope: { groupId: gid } });
   });
 
   it('startRound — 라운드 시작 시 active, 이전 active 는 closed', async () => {

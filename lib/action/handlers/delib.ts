@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { sessions, participants, delibGroups, delibRounds, statements, votes, landscape, aiObservations } from '@/lib/db/repo'
+import { randomBytes } from 'node:crypto'
+import { sessions, participants, delibGroups, delibRounds, statements, votes, landscape, aiObservations, accessKeys } from '@/lib/db/repo'
 import { RoundModeEnum, StatementVisibilityEnum, VoteValueEnum, ModerationActionEnum, EvidenceKindEnum } from '@/lib/db/schema'
 import { envelopeToCtx } from '../context'
 import { computeSnapshotPayload } from '@/lib/delib/metrics'
@@ -216,6 +217,44 @@ export const assignParticipant: Handler = async ({ envelope }) => {
   const ctx = envelopeToCtx(envelope)
   const row = await delibGroups.assignParticipant(ctx, input.participantId, input.groupId)
   return { data: { participantId: row.participant_id, groupId: row.group_id }, summary: `participant ${row.participant_id} → group ${row.group_id}` }
+}
+
+const IssueParticipantAccessKeyInput = z.object({
+  sessionId: z.string(),
+  groupId: z.string().optional(),
+  rawKey: z.string().min(8).optional(),
+  expiresAt: z.string().optional()
+})
+
+// 운영자 전용 키 발급. 참가자 row 생성은 여전히 /p/enter 에서만 수행한다(C-B).
+export const issueParticipantAccessKey: Handler = async ({ envelope }) => {
+  const input = IssueParticipantAccessKeyInput.parse(envelope.input)
+  const ctx = envelopeToCtx(envelope)
+  const session = await sessions.findById(ctx, input.sessionId)
+  if (!session) throw new Error('delib: session not found')
+  if (input.groupId) {
+    const group = await delibGroups.findById(ctx, input.groupId)
+    if (!group || group.session_id !== input.sessionId) throw new Error('delib: access key group session mismatch')
+  }
+  const expiresAt = input.expiresAt ?? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+  const rawKey = input.rawKey ?? randomBytes(18).toString('base64url')
+  const issued = await accessKeys.issue(ctx, {
+    session_id: input.sessionId,
+    role: 'participant',
+    expires_at: expiresAt,
+    rawKey,
+    scope: input.groupId ? { groupId: input.groupId } : {}
+  })
+  return {
+    data: {
+      accessKeyId: issued.id,
+      rawKey: issued.raw_key,
+      keyPrefix: issued.key_prefix,
+      expiresAt: issued.expires_at,
+      groupId: input.groupId ?? null
+    },
+    summary: `participant access key issued ${issued.id}`
+  }
 }
 
 const StartRoundInput = z.object({

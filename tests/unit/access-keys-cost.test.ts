@@ -74,6 +74,20 @@ describe('access key bcrypt cost', () => {
     expect(await accessKeys.verify(issued.raw_key)).toMatchObject({ id: issued.id })
   })
 
+  it('신규 키 scope를 저장하고 검증 결과에 유지한다', async () => {
+    const issued = await accessKeys.issue(adminContext('se-001-DEMO'), {
+      session_id: 'se-001-DEMO',
+      role: 'participant',
+      expires_at: '2026-12-31T23:59:00+09:00',
+      rawKey: 'scoped-secret',
+      scope: { groupId: 'wg-demo-1' }
+    })
+
+    const stored = getStore().access_keys.find((k) => k.id === issued.id)
+    expect(stored?.scope).toEqual({ groupId: 'wg-demo-1' })
+    expect(await accessKeys.verify(issued.raw_key)).toMatchObject({ id: issued.id, scope: { groupId: 'wg-demo-1' } })
+  })
+
   it('이미 prefix가 붙은 신규 키는 해당 prefix 후보만 bcrypt 비교한다', async () => {
     const rawKey = withAccessKeyPrefix('secret-for-prefix', 'pref1234')
     const issued = await accessKeys.issue(adminContext('se-001-DEMO'), {

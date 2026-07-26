@@ -18,6 +18,7 @@ describe('delib permission matrix', () => {
       'delib.register_participant',
       'delib.upsert_group',
       'delib.assign_participant',
+      'delib.issue_participant_access_key',
       'delib.start_round',
       'delib.moderate_statement',
       'delib.compute_snapshot',
@@ -30,6 +31,7 @@ describe('delib permission matrix', () => {
   it('operator(instructor/assistant/admin)는 운영 액션 가능', () => {
     for (const role of ['admin', 'instructor', 'assistant'] as const) {
       expect(isAllowed('delib.upsert_group', role)).toBe(true);
+      expect(isAllowed('delib.issue_participant_access_key', role)).toBe(true);
       expect(isAllowed('delib.moderate_statement', role)).toBe(true);
       expect(isAllowed('delib.compute_snapshot', role)).toBe(true);
     }
@@ -42,8 +44,8 @@ describe('delib permission matrix', () => {
     }
   });
 
-  it('catalog 에 delib 액션 13종이 전부 등록되어 있다 (Q2 검토 후보 2종 포함)', () => {
+  it('catalog 에 delib 액션 14종이 전부 등록되어 있다 (Q2 검토 후보 2종 포함)', () => {
     const delibActions = listCatalog().filter((a) => a.startsWith('delib.'));
-    expect(delibActions.length).toBe(13);
+    expect(delibActions.length).toBe(14);
   });
 });

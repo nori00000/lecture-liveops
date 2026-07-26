@@ -9,7 +9,7 @@ import { clearSeatMarks, updateSeatMark, upsertSeatLayout, listSeatLayoutTemplat
 import { openCollaborativeExcel, updateExcelCell } from './handlers/excel'
 import { exportSessionArchive, syncExternalArchive } from './handlers/exports'
 import { createLectureSession, ingestRawNote, generateSituationSnapshot, deleteObservation, resolveObservation, updateObservation, updateSessionPhase, endSession, upsertMaterialVersion, listSessionDashboard } from './handlers/liveops'
-import { updateWorkshopSettings, createWorkshop, registerParticipant, upsertGroup, assignParticipant, startRound, submitStatement, moderateStatement, voteStatement, computeSnapshot, publishSnapshot, computeAiObservations, reviewAiObservation } from './handlers/delib'
+import { updateWorkshopSettings, createWorkshop, registerParticipant, upsertGroup, assignParticipant, issueParticipantAccessKey, startRound, submitStatement, moderateStatement, voteStatement, computeSnapshot, publishSnapshot, computeAiObservations, reviewAiObservation } from './handlers/delib'
 
 export const CATALOG: Record<string, Handler> = {
   'liveops.get_today_session': getTodaySession,
@@ -51,6 +51,7 @@ export const CATALOG: Record<string, Handler> = {
   'delib.register_participant': registerParticipant,
   'delib.upsert_group': upsertGroup,
   'delib.assign_participant': assignParticipant,
+  'delib.issue_participant_access_key': issueParticipantAccessKey,
   'delib.start_round': startRound,
   'delib.submit_statement': submitStatement,
   'delib.moderate_statement': moderateStatement,

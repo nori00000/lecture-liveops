@@ -25,8 +25,11 @@ export async function POST(req: Request) {
   // 참가자용 role 만 identity 를 심는다(operator 키로 입장 시에는 participant 신원 불필요).
   let participantId: string | undefined
   let groupId: string | undefined
+  let redirectTo = '/p/dashboard'
   if (verified.role === 'participant') {
     const ctx = adminContext(verified.session_id)
+    const scopedGroupId = typeof verified.scope?.groupId === 'string' ? verified.scope.groupId : undefined
+    if (scopedGroupId) redirectTo = '/p/workshop'
     let participant = await participants.findByAccessKeyId(ctx, verified.id)
     if (!participant) {
       try {
@@ -43,12 +46,18 @@ export async function POST(req: Request) {
     }
     if (!participant) return NextResponse.json({ ok: false, error: 'participant provisioning failed' }, { status: 500 })
     participantId = participant.id
-    const membership = await delibGroups.findMembershipByParticipant(ctx, participant.id)
+    let membership = await delibGroups.findMembershipByParticipant(ctx, participant.id)
+    if (!membership && scopedGroupId) {
+      const group = await delibGroups.findById(ctx, scopedGroupId)
+      if (group?.session_id === verified.session_id) {
+        membership = await delibGroups.assignParticipant(ctx, participant.id, scopedGroupId)
+      }
+    }
     groupId = membership?.group_id
   }
 
   const res = NextResponse.json(
-    { ok: true, role: verified.role, sessionId: verified.session_id, redirectTo: '/p/dashboard' },
+    { ok: true, role: verified.role, sessionId: verified.session_id, redirectTo },
     { headers: { 'cache-control': 'no-store', 'x-robots-tag': 'noindex, nofollow' } }
   )
   res.cookies.set(
