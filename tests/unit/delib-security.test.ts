@@ -186,6 +186,72 @@ describe('delib 보안 — 발언 세션 경계 / closed round (C-E)', () => {
   });
 });
 
+// C1: 세션 경계(C-E)만으로는 막히지 않던 구멍 — **같은 세션 안의 남의 그룹**.
+// assertStatementScope 는 group.session_id 만 봤기 때문에, 참가자가 /api/action 을 직접 호출해
+// 자기 소속이 아닌 같은 세션 groupId 를 실으면 그 그룹 발언으로 저장됐다.
+describe('delib 보안 — 참가자 그룹 위조 (C1)', () => {
+  beforeEach(async () => { resetStore(); await confirmConsent(SID); });
+
+  it('타 그룹 groupId 제출 거부 — 같은 세션이어도 소속이 아니면 throw', async () => {
+    const gA = await mkGroup(SID, 'A조');
+    const gB = await mkGroup(SID, 'B조');
+    const attacker = await mkParticipant(SID, 'attacker');
+    await assignParticipant({ envelope: env('delib.assign_participant', 'instructor', { participantId: attacker, groupId: gA }) });
+
+    await expect(
+      submitStatement({
+        envelope: env('delib.submit_statement', 'participant', { sessionId: SID, groupId: gB, body: 'B조인 척' }, SID),
+        trusted: { participantId: attacker }
+      })
+    ).rejects.toThrow(/membership mismatch/);
+
+    // 거부는 조용한 무시가 아니어야 한다 — B조에 아무것도 남지 않는다.
+    const all = await statements.list(adminContext(SID), SID);
+    expect(all.filter((s) => s.group_id === gB)).toHaveLength(0);
+  });
+
+  it('참가자 groupId 는 서버 membership 으로 강제 — input 없이도 자기 그룹으로 귀속', async () => {
+    const gA = await mkGroup(SID, 'A조');
+    const p = await mkParticipant(SID, 'member');
+    await assignParticipant({ envelope: env('delib.assign_participant', 'instructor', { participantId: p, groupId: gA }) });
+
+    const r = await submitStatement({
+      envelope: env('delib.submit_statement', 'participant', { sessionId: SID, body: '내 그룹 발언' }, SID),
+      trusted: { participantId: p }
+    });
+    const st = await statements.findById(adminContext(SID), (r.data as { statementId: string }).statementId);
+    expect(st?.group_id).toBe(gA);
+  });
+
+  it('미배정 참가자는 group_id null — 임의 그룹 주장 불가', async () => {
+    const gA = await mkGroup(SID, 'A조');
+    const p = await mkParticipant(SID, 'ungrouped');
+
+    await expect(
+      submitStatement({
+        envelope: env('delib.submit_statement', 'participant', { sessionId: SID, groupId: gA, body: '무단 소속' }, SID),
+        trusted: { participantId: p }
+      })
+    ).rejects.toThrow(/membership mismatch/);
+
+    const r = await submitStatement({
+      envelope: env('delib.submit_statement', 'participant', { sessionId: SID, body: '전체 발언' }, SID),
+      trusted: { participantId: p }
+    });
+    const st = await statements.findById(adminContext(SID), (r.data as { statementId: string }).statementId);
+    expect(st?.group_id).toBeNull();
+  });
+
+  it('operator 대리입력은 종전대로 groupId 지정 허용 — 퍼실 운영 경로 회귀 방지', async () => {
+    const gA = await mkGroup(SID, 'A조');
+    const r = await submitStatement({
+      envelope: env('delib.submit_statement', 'instructor', { sessionId: SID, groupId: gA, body: '퍼실 기록' })
+    });
+    const st = await statements.findById(adminContext(SID), (r.data as { statementId: string }).statementId);
+    expect(st?.group_id).toBe(gA);
+  });
+});
+
 describe('delib 보안 — 구조 무결성 (M-3/M-4/M-5)', () => {
   beforeEach(async () => { resetStore(); await confirmConsent(SID); });
 

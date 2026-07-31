@@ -329,7 +329,22 @@ export const submitStatement: Handler = async ({ envelope, trusted }) => {
   if (envelope.actor.role === 'participant' && !authorParticipantId) {
     throw new Error('delib: participant identity required')
   }
-  await assertStatementScope(ctx, sessionId, input.roundId ?? null, input.groupId ?? null, authorParticipantId)
+  // C1 (참가자 그룹 위조 차단): participant 가 보낸 input.groupId 는 신뢰하지 않는다.
+  // assertStatementScope 는 그룹의 **세션 일치만** 검증하므로, 같은 세션의 임의 groupId 를 실으면
+  // 소속되지 않은 그룹에 visibility='group' 발언을 삽입할 수 있었다 (그룹 익명성·토론 경계 붕괴).
+  // 저자 신원(C-A)과 같은 원칙: 참가자 경로의 그룹 귀속은 **서버가 조회한 membership** 만 사용하고,
+  // 클라이언트가 다른 groupId 를 주장하면 저장하지 않고 거부한다(조용한 무시 대신 명시적 거부).
+  // 쿠키의 trusted.groupId 가 아니라 DB membership 을 권위로 삼는다 — 재배정 후 쿠키는 stale 일 수 있다.
+  let groupId = input.groupId ?? null
+  if (envelope.actor.role === 'participant') {
+    const membership = await delibGroups.findMembershipByParticipant(ctx, authorParticipantId!)
+    const trustedGroupId = membership?.group_id ?? null
+    if (input.groupId != null && input.groupId !== trustedGroupId) {
+      throw new Error('delib: statement group membership mismatch')
+    }
+    groupId = trustedGroupId
+  }
+  await assertStatementScope(ctx, sessionId, input.roundId ?? null, groupId, authorParticipantId)
   // Codex2 (대리입력 오귀속 차단): Q1 근거 유형은 **참가자 본인이 고른 값**으로만 집계된다.
   // operator 가 참가자를 지정해 대신 입력하는 경로에서 온 태그는 실제 선택 주체가 운영자이므로,
   // 그대로 저장하면 "참가자 자기 선택 분포"(§5 지표)가 조용히 오염된다.
@@ -342,7 +357,7 @@ export const submitStatement: Handler = async ({ envelope, trusted }) => {
   const row = await statements.submit(ctx, {
     session_id: sessionId,
     round_id: input.roundId ?? null,
-    group_id: input.groupId ?? null,
+    group_id: groupId,
     author_participant_id: authorParticipantId,
     body: input.body,
     visibility: input.visibility ?? 'group',
