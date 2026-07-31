@@ -5,6 +5,7 @@ import { readRecordingConsent } from '@/lib/action/handlers/delib'
 import { buildTranscriptLensSummary, type TranscriptLensSegmentInput } from '@/lib/delib/transcriptLens'
 import { buildDialogueStateMap, type DialogueMirrorSegment } from '@/lib/dialogue/stateMap'
 import { buildDialogueNudges } from '@/lib/dialogue/nudges'
+import { gateTranscriptSources } from '@/lib/dialogue/access'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -18,13 +19,19 @@ export async function GET(req: Request) {
   const session = await sessions.findById(ctx, sessionId)
   if (!session) return NextResponse.json({ ok: false, error: 'session not found' }, { status: 404 })
 
-  const [groups, rounds, sources, visibleStatements] = await Promise.all([
+  const [groups, rounds, allSources, visibleStatements] = await Promise.all([
     delibGroups.list(ctx, sessionId),
     delibRounds.list(ctx, sessionId),
     transcripts.listSources(ctx, sessionId),
     statements.list(ctx, sessionId, undefined, { visibleOnly: true })
   ])
-  const sourceSegments = await transcripts.listSegmentsBySourceIds(ctx, sources.map((s) => s.id), { limit: 160 })
+  // C2: 전사 원문 read 는 동의 게이트 통과 후에만. 게이트가 소스를 비우면 segment 조회 자체를 하지 않는다
+  // (배지 표시용으로만 쓰던 recordingConsent 를 read 선행 조건으로 승격 — lib/dialogue/access.ts 참조).
+  const recording = readRecordingConsent(session.metadata)
+  const sources = gateTranscriptSources(recording.active, allSources)
+  const sourceSegments = sources.length > 0
+    ? await transcripts.listSegmentsBySourceIds(ctx, sources.map((s) => s.id), { limit: 160 })
+    : []
   const sourceById = new Map(sources.map((s) => [s.id, s] as const))
   const groupById = new Map(groups.map((g) => [g.id, g] as const))
   const activeRound = rounds.find((r) => r.status === 'active') ?? null
@@ -75,7 +82,6 @@ export async function GET(req: Request) {
   }))
   const mirror = buildDialogueStateMap(mirrorSegments)
   const nudges = buildDialogueNudges(mirror)
-  const recording = readRecordingConsent(session.metadata)
   const lastUpdatedAt = lensSegments.reduce<string | null>((max, s) => (max == null || s.createdAt > max ? s.createdAt : max), null)
 
   return NextResponse.json({

@@ -5,6 +5,7 @@ import { readRecordingConsent } from '@/lib/action/handlers/delib'
 import { buildTranscriptLensSummary, type TranscriptLensSegmentInput } from '@/lib/delib/transcriptLens'
 import { buildDialogueStateMap, type DialogueMirrorSegment } from '@/lib/dialogue/stateMap'
 import { buildDialogueNudges } from '@/lib/dialogue/nudges'
+import { gateTranscriptSources, isRoomVisibleStatement } from '@/lib/dialogue/access'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -18,13 +19,22 @@ export async function GET(req: Request) {
   const session = await sessions.findById(ctx, sessionId)
   if (!session) return NextResponse.json({ ok: false, error: 'session not found' }, { status: 404 })
 
-  const [groups, rounds, sources, visibleStatements] = await Promise.all([
+  const [groups, rounds, allSources, moderationVisibleStatements] = await Promise.all([
     delibGroups.list(ctx, sessionId),
     delibRounds.list(ctx, sessionId),
     transcripts.listSources(ctx, sessionId),
     statements.list(ctx, sessionId, undefined, { visibleOnly: true })
   ])
-  const sourceSegments = await transcripts.listSegmentsBySourceIds(ctx, sources.map((s) => s.id), { limit: 160 })
+  // C2: 전사 원문 read 는 동의 게이트 통과 후에만 (live 라우트와 동일 helper).
+  const recording = readRecordingConsent(session.metadata)
+  const sources = gateTranscriptSources(recording.active, allSources)
+  const sourceSegments = sources.length > 0
+    ? await transcripts.listSegmentsBySourceIds(ctx, sources.map((s) => s.id), { limit: 160 })
+    : []
+  // C3: projector 는 **방 전체 화면**이다. moderation 통과(visibleOnly)는 필요조건일 뿐이고,
+  // 화자가 전체 공개를 선택한 visibility='public' 발언만 원문으로 올린다.
+  // group visibility 발언이 전체 스크린에 뜨던 것이 그룹 익명성 계약 위반이었다.
+  const visibleStatements = moderationVisibleStatements.filter((s) => isRoomVisibleStatement(s.visibility))
   const sourceById = new Map(sources.map((s) => [s.id, s] as const))
   const groupById = new Map(groups.map((g) => [g.id, g] as const))
   const activeRound = rounds.find((r) => r.status === 'active') ?? null
@@ -76,7 +86,6 @@ export async function GET(req: Request) {
   }))
   const mirror = buildDialogueStateMap(mirrorSegments)
   const nudges = buildDialogueNudges(mirror)
-  const recording = readRecordingConsent(session.metadata)
 
   return NextResponse.json({
     ok: true,
