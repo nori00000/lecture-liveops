@@ -19,6 +19,15 @@ mkdirSync(OUT_DIR, { recursive: true })
 const log = []
 const steps = []
 
+// CSRF 토큰 — /api/action 변형 요청의 전제. 미발급이면 모든 호출이 403 forbidden_origin 이 된다.
+let CSRF_TOKEN = ''
+async function fetchCsrf() {
+  const res = await fetch(BASE + '/api/csrf')
+  const body = await res.json().catch(() => null)
+  if (!body?.token) throw new Error('CSRF 토큰 발급 실패')
+  CSRF_TOKEN = body.token
+}
+
 function record(step, status, detail) {
   const entry = { step, status, detail, ts: new Date().toISOString() }
   log.push(entry)
@@ -39,7 +48,13 @@ async function call(action, role, input, opts = {}) {
   }
   const res = await fetch(BASE + '/api/action', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      // 브라우저 변형 요청은 origin + CSRF 토큰이 있어야 통과한다. 없으면 forbidden_origin 으로 전부 막힌다.
+      origin: BASE,
+      cookie: `liveops_csrf=${CSRF_TOKEN}`,
+      'x-csrf-token': CSRF_TOKEN
+    },
     body: JSON.stringify(envelope)
   })
   const body = await res.json().catch(() => null)
@@ -55,6 +70,8 @@ async function get(url) {
   console.log(`run_id: ${RUN_ID}`)
   console.log(`base  : ${BASE}`)
   console.log(`out   : ${OUT_DIR}\n`)
+
+  await fetchCsrf()
 
   // 사전 점검: fixture mode 확인
   const health = await get('/api/health')

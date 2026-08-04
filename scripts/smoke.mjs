@@ -5,6 +5,16 @@ import process from 'node:process'
 
 const BASE = process.env.LIVEOPS_BASE_URL ?? 'http://localhost:3010'
 
+// CSRF 토큰 — /api/action 변형 요청의 전제. 이게 없으면 제품이 정상이어도 전부 403 forbidden_origin 이
+// 떠서 스모크가 거짓 경보를 낸다(그리고 진짜 실패를 가린다).
+let CSRF_TOKEN = ''
+async function fetchCsrf() {
+  const res = await fetch(BASE + '/api/csrf')
+  const body = await res.json().catch(() => null)
+  if (!body?.token) throw new Error('CSRF 토큰 발급 실패')
+  CSRF_TOKEN = body.token
+}
+
 async function call(path, init) {
   const res = await fetch(BASE + path, init)
   let json
@@ -22,8 +32,19 @@ function check(name, ok, detail) {
   const h = await call('/api/health')
   check('1. /api/health', h.status === 200 && h.body?.ok === true, `mode=${h.body?.mode}`)
 
+  await fetchCsrf()
+
   // 2) get_today_session
-  const env = (body) => ({ method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+  const env = (body) => ({
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      origin: BASE,
+      cookie: `liveops_csrf=${CSRF_TOKEN}`,
+      'x-csrf-token': CSRF_TOKEN
+    },
+    body: JSON.stringify(body)
+  })
   const idk1 = 'smoke-' + Date.now()
   const r2 = await call('/api/action', env({
     action: 'liveops.get_today_session',

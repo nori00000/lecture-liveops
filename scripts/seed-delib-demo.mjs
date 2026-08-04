@@ -85,6 +85,75 @@ async function call(action, role, input, scope = {}) {
   throw new Error(`${action} 실패: retry exhausted`)
 }
 
+// 참가자 신원으로 액션을 호출한다 (participant 세션 쿠키 동반).
+// Q1 근거 유형은 **참가자 본인이 고른 값**으로만 저장된다 — operator 대리입력 경로에서는 서버가
+// evidence_kind 를 null 로 강제하기 때문에(§5 지표 오염 방지), 데모가 Q1 을 보여주려면
+// 실제 참가자 세션으로 제출해야 한다. 이 가드를 우회하지 않고 정식 경로를 그대로 쓴다.
+async function callAsParticipant(cookie, action, input, scope = {}) {
+  const envelope = {
+    action,
+    actor: { type: 'human', role: 'participant', tool: 'web-ui' },
+    scope,
+    idempotencyKey: `${RUN_ID}-${action}-${String(SEQ++).padStart(5, '0')}`,
+    redactionPolicy: 'summary',
+    dryRun: false,
+    input
+  }
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const res = await fetch(BASE + '/api/action', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: BASE,
+        cookie: `liveops_csrf=${CSRF_TOKEN}; ${cookie}`,
+        'x-csrf-token': CSRF_TOKEN
+      },
+      body: JSON.stringify(envelope)
+    })
+    const body = await res.json().catch(() => null)
+    if (res.status === 200 && body?.ok !== false) return body
+    if (res.status === 429 && attempt < MAX_RETRIES) {
+      await sleep(retryDelayMs(res, attempt))
+      continue
+    }
+    throw new Error(`${action}(participant) 실패 (status ${res.status}): ${body?.error ?? 'unknown'}`)
+  }
+  throw new Error(`${action}(participant) 실패: retry exhausted`)
+}
+
+// 접속 키로 실제 입장 → participant 세션 쿠키 + participantId 확보.
+// /p/enter 가 access_key 당 participant 1개를 서버에서 만들고 scope.groupId 그룹에 배정한다.
+async function enterAsParticipant(rawKey) {
+  const res = await fetch(BASE + '/api/p/enter', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      origin: BASE,
+      cookie: `liveops_csrf=${CSRF_TOKEN}`,
+      'x-csrf-token': CSRF_TOKEN
+    },
+    body: JSON.stringify({ accessKey: rawKey })
+  })
+  const body = await res.json().catch(() => null)
+  if (res.status !== 200 || body?.ok !== true) {
+    throw new Error(`participant 입장 실패 (status ${res.status}): ${body?.error ?? 'unknown'}`)
+  }
+  const raw = typeof res.headers.getSetCookie === 'function'
+    ? res.headers.getSetCookie()
+    : [res.headers.get('set-cookie') ?? '']
+  const cookie = raw
+    .map((c) => c.split(';')[0])
+    .find((c) => c.startsWith(`${PARTICIPANT_COOKIE}=`))
+  if (!cookie) throw new Error(`participant 세션 쿠키(${PARTICIPANT_COOKIE}) 미발급`)
+  // 투표는 operator 대리 경로를 쓰므로 participantId 가 필요하다 — 본인 화면 API 에서 받는다.
+  const meRes = await fetch(`${BASE}/api/data/delib/participant-view`, {
+    headers: { cookie: `liveops_csrf=${CSRF_TOKEN}; ${cookie}` }
+  })
+  const me = await meRes.json().catch(() => null)
+  if (!me?.participantId) throw new Error('participant 신원 조회 실패')
+  return { cookie, participantId: me.participantId }
+}
+
 async function pool(items, size, worker) {
   for (let i = 0; i < items.length; i += size) {
     await Promise.all(items.slice(i, i + size).map(worker))
@@ -95,6 +164,11 @@ async function pool(items, size, worker) {
 // 결정론적 시나리오 정의 — "우리 동네 도서관 운영 시간, 어떻게 정할까"
 // ============================================================
 const PARTICIPANTS = 24
+// 그룹당 발언 저자 수. Q1 근거 유형 분포는 그룹 기여자가 3명 미만이면 억제되므로(개인 태깅 역추론 방지)
+// 데모가 Q1 을 실제로 보여주려면 그룹당 최소 3명이 필요하다.
+const AUTHORS_PER_GROUP = 3
+// lib/participantSession.ts 의 PARTICIPANT_SESSION_COOKIE 와 같아야 한다 (스크립트는 앱 모듈을 import 하지 않음).
+const PARTICIPANT_COOKIE = 'liveops_participant_session'
 const GROUPS = [
   { label: '1조', topic: '평일 야간 연장' },
   { label: '2조', topic: '주말·공휴일 운영' },
@@ -109,30 +183,42 @@ const ROUNDS = {
   r2: { roundIndex: 2, title: '전체 종합 — 우선순위 투표', mode: 'plenary' }
 }
 
-// 의견 15개. r=라운드 키(r0=오프닝), g=그룹 index(0~3), a/d/p=찬성/반대/유보 표수(고정).
+// 의견 22개. r=라운드 키(r0=오프닝), g=그룹 index(0~3), a/d/p=찬성/반대/유보 표수(고정),
+// ev=Q1 근거 유형(참가자 본인 선택: experience|source|estimate, 생략=미지정).
 // moderate: 'flag' 이면 제출 후 신고 처리 → 모더레이션 큐에 노출되고 집계에서 제외.
 // 설계 의도:
-//   consensus(합의): S1·S5·S10·S13·S14 (한쪽 강한 쏠림)
+//   consensus(합의점, 찬성 우세): S1·S5·S10·S13·S14 (찬성 쪽 강한 쏠림)
+//   opposed(반대 합의, 반대 우세): S3·S7·S8 (반대 쪽 강한 쏠림 — 합의점과 섞이면 안 되는 항목)
 //   divisive(쟁점):  S2·S6 (찬반 팽팽)
-//   minority(소수):  S3·S7·S8 (전체 다수=찬성인데 반대 우세 → 소수의견 카드)
+//   minority(소수):  전체 다수 방향과 반대인 발언에 자동 flag
 //   k-익명 억제:     S11·S15 (총 2표 → 개인 표 역추론 위험, 수치 마스킹)
 //   moderation:      S12 (신고 → 큐 노출·집계 제외)
+//   Q1 분포:         r1 은 그룹마다 발언 4건·저자 3명 이상 → 근거 유형 분포가 억제되지 않고 표시된다.
+//                    "추정" 비율이 5~80% 구간(사전등록 임계) 안에 들도록 섞었다.
 const STATEMENTS = [
-  { key: 'S1', r: 'r0', g: 0, a: 18, d: 3, p: 1, body: '평일 저녁 9시까지 개관 시간을 연장하는 것이 가장 시급하다.' },
-  { key: 'S2', r: 'r0', g: 1, a: 11, d: 10, p: 2, body: '주말 개관을 오전 9시로 앞당기자.' },
-  { key: 'S3', r: 'r0', g: 3, a: 5, d: 14, p: 2, body: '예산 한계상 야간 연장은 비현실적이므로 반대한다.' },
-  { key: 'S4', r: 'r1', g: 0, a: 15, d: 4, p: 1, body: '열람실만 야간에 연장 개방하고 나머지 층은 정시 마감하자.' },
-  { key: 'S5', r: 'r1', g: 3, a: 17, d: 2, p: 2, body: '무인 반납·대출기를 도입해 인건비를 줄이면 연장 여력이 생긴다.' },
-  { key: 'S6', r: 'r1', g: 2, a: 9, d: 9, p: 3, body: '청소년 전용 이용 시간대를 신설하자.' },
-  { key: 'S7', r: 'r1', g: 1, a: 6, d: 13, p: 2, body: '일요일 휴관을 폐지하고 연중무휴로 운영하자.' },
-  { key: 'S8', r: 'r1', g: 0, a: 4, d: 16, p: 1, body: '라운지를 24시간 개방해 심야 자율 학습 공간으로 쓰자.' },
-  { key: 'S9', r: 'r1', g: 3, a: 12, d: 7, p: 2, body: '지역 자원봉사자를 활용해 저녁 시간대를 운영하자.' },
-  { key: 'S10', r: 'r1', g: 2, a: 14, d: 3, p: 1, body: '조용한 열람실을 확대해 달라는 요구가 많다.' },
-  { key: 'S11', r: 'r1', g: 2, a: 1, d: 1, p: 0, body: '특정 소모임만을 위한 심야 개방을 요청한다.' }, // 총 2표 → 억제
+  { key: 'S1', r: 'r0', g: 0, a: 18, d: 3, p: 1, ev: 'experience', body: '평일 저녁 9시까지 개관 시간을 연장하는 것이 가장 시급하다.' },
+  { key: 'S2', r: 'r0', g: 1, a: 11, d: 10, p: 2, ev: 'estimate', body: '주말 개관을 오전 9시로 앞당기자.' },
+  { key: 'S3', r: 'r0', g: 3, a: 5, d: 14, p: 2, ev: 'source', body: '예산 한계상 야간 연장은 비현실적이므로 반대한다.' },
+  // r1 분임 — 그룹마다 4건(저자 3명 이상). Q1 근거 유형 분포가 그룹 단위로 표시되는 최소 조건.
+  { key: 'S4', r: 'r1', g: 0, a: 15, d: 4, p: 1, ev: 'experience', body: '열람실만 야간에 연장 개방하고 나머지 층은 정시 마감하자.' },
+  { key: 'S8', r: 'r1', g: 0, a: 4, d: 16, p: 1, ev: 'estimate', body: '라운지를 24시간 개방해 심야 자율 학습 공간으로 쓰자.' },
+  { key: 'S16', r: 'r1', g: 0, a: 13, d: 6, p: 2, ev: 'source', body: '인근 도서관 야간 이용 통계를 보면 저녁 7~9시 이용자가 가장 많다.' },
+  { key: 'S17', r: 'r1', g: 0, a: 8, d: 11, p: 2, ev: 'estimate', body: '야간 연장은 이용자보다 직원 부담이 더 커질 것 같다.' },
+  { key: 'S7', r: 'r1', g: 1, a: 6, d: 13, p: 2, ev: 'estimate', body: '일요일 휴관을 폐지하고 연중무휴로 운영하자.' },
   { key: 'S12', r: 'r1', g: 1, a: 0, d: 0, p: 0, moderate: 'flag', body: '[신고 예시] 특정 이용자를 비난하는 부적절 발언 — 모더레이션 시연용.' },
-  { key: 'S13', r: 'r2', g: 0, a: 20, d: 2, p: 1, body: '최우선 과제로 평일 야간 연장을 채택하자.' },
-  { key: 'S14', r: 'r2', g: 3, a: 16, d: 3, p: 2, body: '시 예산 확보를 위한 주민 청원을 진행하자.' },
-  { key: 'S15', r: 'r2', g: 2, a: 2, d: 0, p: 0, body: '야간 연장에 반대하는 소수 입장도 회의록에 남기자.' } // 총 2표 → 억제
+  { key: 'S18', r: 'r1', g: 1, a: 16, d: 4, p: 1, ev: 'experience', body: '토요일 오전에 아이와 왔다가 자리가 없어 돌아간 적이 여러 번 있다.' },
+  { key: 'S19', r: 'r1', g: 1, a: 10, d: 9, p: 2, ev: 'source', body: '조례상 공휴일 운영은 관장 재량이라 예산만 확보되면 가능하다.' },
+  { key: 'S6', r: 'r1', g: 2, a: 9, d: 9, p: 3, ev: 'estimate', body: '청소년 전용 이용 시간대를 신설하자.' },
+  { key: 'S10', r: 'r1', g: 2, a: 14, d: 3, p: 1, ev: 'experience', body: '조용한 열람실을 확대해 달라는 요구가 많다.' },
+  { key: 'S11', r: 'r1', g: 2, a: 1, d: 1, p: 0, ev: 'estimate', body: '특정 소모임만을 위한 심야 개방을 요청한다.' }, // 총 2표 → 억제
+  { key: 'S20', r: 'r1', g: 2, a: 12, d: 8, p: 1, ev: 'source', body: '청소년 이용 통계는 시험기간에만 몰려 상시 전용 시간대 근거는 약하다.' },
+  { key: 'S5', r: 'r1', g: 3, a: 17, d: 2, p: 2, ev: 'source', body: '무인 반납·대출기를 도입해 인건비를 줄이면 연장 여력이 생긴다.' },
+  { key: 'S9', r: 'r1', g: 3, a: 12, d: 7, p: 2, ev: 'estimate', body: '지역 자원봉사자를 활용해 저녁 시간대를 운영하자.' },
+  { key: 'S21', r: 'r1', g: 3, a: 5, d: 15, p: 1, ev: 'experience', body: '자원봉사자에게 야간 운영을 맡겼다가 사고가 났던 사례를 들었다.' },
+  { key: 'S22', r: 'r1', g: 3, a: 14, d: 5, p: 2, ev: 'experience', body: '무인기 도입 후 반납 대기줄이 줄어든 것을 직접 봤다.' },
+  { key: 'S13', r: 'r2', g: 0, a: 20, d: 2, p: 1, ev: 'experience', body: '최우선 과제로 평일 야간 연장을 채택하자.' },
+  { key: 'S14', r: 'r2', g: 3, a: 16, d: 3, p: 2, ev: 'source', body: '시 예산 확보를 위한 주민 청원을 진행하자.' },
+  { key: 'S15', r: 'r2', g: 2, a: 2, d: 0, p: 0, ev: 'experience', body: '야간 연장에 반대하는 소수 입장도 회의록에 남기자.' } // 총 2표 → 억제
 ]
 
 // 결정론적 투표 배정 — 발언 index 마다 offset 을 달리해 24명 중 (a+d+p)명이 서로 다른 표를 던진다.
@@ -181,32 +267,47 @@ async function seedDemo() {
   }
   log('INFO', 'groups', `${groupIds.length}개 분임`)
 
-  // 3-b. 데모용 참가자 접속 키. 실제 participant row 는 /p/enter 입장 시 생성된다.
+  // 3-b. 데모용 참가자 접속 키 — 그룹당 AUTHORS_PER_GROUP 개.
+  // 이 키로 입장한 참가자가 **발언 저자**가 된다(Q1 근거 유형은 본인 선택 값만 저장되므로).
+  // 그룹당 3명 이상이어야 근거 유형 분포가 k-익명 억제에 걸리지 않고 표시된다.
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
   const demoKeys = []
+  const keysByGroup = [[], [], [], []]
   for (let i = 0; i < groupIds.length; i++) {
-    const r = await call('delib.issue_participant_access_key', 'instructor', {
-      sessionId,
-      groupId: groupIds[i],
-      rawKey: `${RUN_ID}-group-${i + 1}-participant`,
-      expiresAt
-    }, scope)
-    demoKeys.push({ label: GROUPS[i].label, topic: GROUPS[i].topic, rawKey: r.data.rawKey })
+    for (let n = 0; n < AUTHORS_PER_GROUP; n++) {
+      const r = await call('delib.issue_participant_access_key', 'instructor', {
+        sessionId,
+        groupId: groupIds[i],
+        rawKey: `${RUN_ID}-group-${i + 1}-participant-${n + 1}`,
+        expiresAt
+      }, scope)
+      keysByGroup[i].push(r.data.rawKey)
+      // 배포용 안내에는 그룹당 대표 키 1개만 싣는다(나머지는 같은 규칙의 -2, -3).
+      if (n === 0) demoKeys.push({ label: GROUPS[i].label, topic: GROUPS[i].topic, rawKey: r.data.rawKey })
+    }
   }
-  log('INFO', 'access keys', `${demoKeys.length}개 데모 참가자 키 발급`)
+  log('INFO', 'access keys', `${groupIds.length * AUTHORS_PER_GROUP}개 데모 참가자 키 발급 (그룹당 ${AUTHORS_PER_GROUP})`)
 
-  // 4. 참가자 24명 등록 + 그룹 배정 (p[i] → 그룹 i%4)
+  // 4-a. 저자 참가자 — 접속 키로 실제 입장. participant row 생성·그룹 배정은 /p/enter 가 한다.
+  const authorsByGroup = [[], [], [], []]
   const pids = []
-  const pidsByGroup = [[], [], [], []]
-  for (let i = 0; i < PARTICIPANTS; i++) {
+  for (let g = 0; g < keysByGroup.length; g++) {
+    for (const rawKey of keysByGroup[g]) {
+      const who = await enterAsParticipant(rawKey)
+      authorsByGroup[g].push(who)
+      pids.push(who.participantId)
+    }
+  }
+  log('INFO', 'authors', `${pids.length}명 접속 키로 입장 (발언 저자)`)
+
+  // 4-b. 나머지 참가자는 운영자 등록(투표자). 저자 + 투표자 = PARTICIPANTS 명.
+  for (let i = pids.length; i < PARTICIPANTS; i++) {
     const r = await call('delib.register_participant', 'instructor', {
       sessionId, displayAlias: `주민 ${String(i + 1).padStart(2, '0')}`, anonHandle: `anon-${String(i + 1).padStart(2, '0')}`
     }, scope)
     const pid = r.data.participantId
     pids.push(pid)
-    const g = i % 4
-    await call('delib.assign_participant', 'instructor', { participantId: pid, groupId: groupIds[g] }, scope)
-    pidsByGroup[g].push(pid)
+    await call('delib.assign_participant', 'instructor', { participantId: pid, groupId: groupIds[i % 4] }, scope)
   }
   log('INFO', 'participants', `${pids.length}명 등록·배정`)
 
@@ -219,11 +320,20 @@ async function seedDemo() {
   const moderatedTargets = []
   let voteCount = 0
 
+  // 그룹별 저자 회전 커서. 전역 index 로 돌리면 그룹마다 저자가 겹쳐 기여자 수가 3 미만으로 떨어지고,
+  // 그러면 근거 유형 분포가 차분공격 방어(연쇄 억제)에 걸려 라운드 전체가 마스킹된다.
+  // 신고 예정 발언은 visible 집계에서 빠지므로 커서를 진행시키지 않는다 — 그 자리도 저자 1명을 소모하면
+  // 남은 visible 발언의 저자가 2명으로 줄어든다.
+  const authorCursor = [0, 0, 0, 0]
+
   async function submitAndVote(stmt, stmtIndex, roundId) {
-    const author = pidsByGroup[stmt.g][stmtIndex % pidsByGroup[stmt.g].length]
-    const res = await call('delib.submit_statement', 'instructor', {
-      sessionId, roundId: roundId ?? undefined, groupId: groupIds[stmt.g],
-      authorParticipantId: author, body: stmt.body
+    // 참가자 본인 신원으로 제출한다 — groupId 는 서버가 membership 에서 강제하므로 보내지 않는다.
+    const authors = authorsByGroup[stmt.g]
+    const author = authors[authorCursor[stmt.g] % authors.length]
+    if (!stmt.moderate) authorCursor[stmt.g] += 1
+    const res = await callAsParticipant(author.cookie, 'delib.submit_statement', {
+      sessionId, roundId: roundId ?? undefined, body: stmt.body,
+      ...(stmt.ev ? { evidenceKind: stmt.ev } : {})
     }, scope)
     const statementId = res.data.statementId
     if (stmt.moderate) {
