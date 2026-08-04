@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { sessions, landscape, statements } from '@/lib/db/repo'
 import { adminContext } from '@/lib/db/neonHelpers'
 import type { SnapshotPayloadWithLandscape } from '@/lib/delib/landscapeMetrics'
+import { normalizeSnapshotRankings } from '@/lib/delib/metrics'
 
 // 프로젝터 결과판 데이터 — 발표용 스냅샷 스냅샷(consensus/divisive/소수의견).
 // 이미 publish 된 스냅샷의 집계 payload 만 노출한다(개인 표 없음, k-익명 억제는 metrics 에서 적용됨).
@@ -32,7 +33,11 @@ export async function GET(req: Request) {
 
   // M3: 결과판은 랭킹(consensus/divisive/minority)에 실제 표시되는 발언 원문만 내려보낸다.
   // suppressed(k-익명 억제)·랭킹 미표시 발언의 원문은 payload 로 새어나가지 않게 allowlist 로 제외한다.
-  const stored = latestPublished.payload as unknown as SnapshotPayloadWithLandscape
+  // 레거시 스냅샷(opposed 이전 발행분)은 consensus 가 방향맹이고 컷오프도 없다 — read 시점에 재분류한다.
+  // 저장된 발행 스냅샷 자체는 절차 증빙이므로 변조하지 않는다 (리포트와 동일 규칙).
+  const stored = normalizeSnapshotRankings(
+    latestPublished.payload as unknown as SnapshotPayloadWithLandscape
+  )
   // H2(2026-07-22): landscape.projection(개별 좌표)은 익명이 아니다 — 좌표는 개인 투표 벡터의
   // 저차원 서명이라 공개 발언·현장 관찰과 결합하면 재식별 가능하다.
   // 좌표는 스냅샷 내부에만 남기고 공개 payload 에서는 제거한다 (클러스터 규모·대표문장·설명분산만 노출).
@@ -48,6 +53,7 @@ export async function GET(req: Request) {
     : []
   const shownIds = new Set<string>([
     ...(payload.consensus ?? []).map((m) => m.statementId),
+    ...(payload.opposed ?? []).map((m) => m.statementId),
     ...(payload.divisive ?? []).map((m) => m.statementId),
     ...(payload.minority ?? []).map((m) => m.statementId),
     ...landscapeIds

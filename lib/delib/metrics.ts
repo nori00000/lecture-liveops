@@ -27,7 +27,10 @@ export type StatementMetric = {
   // 순찬성 = agree - disagree
   net: number
   leaning: Leaning
-  // 합의 강도 = |찬-반| / (찬+반). 한쪽으로 쏠릴수록 1에 가까움. (유보 제외)
+  // 쏠림 강도 = |찬-반| / (찬+반). 한쪽으로 쏠릴수록 1에 가까움. (유보 제외)
+  // **방향을 구분하지 않는다** — 찬 16/반 4 와 찬 4/반 16 이 똑같이 0.6 이다.
+  // 방향은 반드시 net/leaning 으로 함께 읽어야 한다. 이 값 단독으로 "합의점"이라 부르면 안 된다
+  // (반대 다수 발언이 합의점으로 표기되던 결함의 원인).
   consensusScore: number
   // 찬반 갈림 = 1 - 합의강도. 팽팽할수록 1에 가까움.
   divisiveScore: number
@@ -51,7 +54,12 @@ export type GroupDeviation = {
 export type SnapshotPayload = {
   statements: StatementMetric[]
   overall: { agree: number; disagree: number; pass: number; leaning: Leaning }
+  // 찬성 방향으로 합의된 발언 (net > 0). "합의점"으로 표기해도 되는 유일한 목록.
   consensus: StatementMetric[]
+  // 반대 방향으로 합의된 발언 (net < 0). 합의는 합의지만 방향이 반대 — 별도 목록으로 분리한다.
+  // 이걸 consensus 에 섞으면 "찬 4 / 반 16" 이 합의점으로 납품된다.
+  opposed: StatementMetric[]
+  // 쏠림이 합의 임계에 못 미친 발언. consensus/opposed 와 상호배타.
   divisive: StatementMetric[]
   minority: MinorityFlag[]
   groupDeviation: GroupDeviation
@@ -63,10 +71,19 @@ export type ComputeOptions = {
   minorityMarginThreshold?: number
   // k-익명 임계 (기본 3). 총 표수가 0 초과 이 값 미만인 발언은 집계 억제 (M-9).
   kAnonymityThreshold?: number
+  // 합의 판정 임계 (기본 0.5) — consensusScore 가 이 값 이상이어야 합의(찬성/반대)로 분류된다.
+  // 0.5 = 다수 쪽이 유효표(찬+반)의 75% 이상. 미만은 전부 쟁점(divisive).
+  consensusMinScore?: number
+  // 각 랭킹 목록의 최대 건수 (기본 5). 이 컷오프가 없으면 투표가 있는 모든 발언이
+  // consensus 와 divisive 양쪽에 전부 실려 "합의점과 쟁점이 같은 목록"이 된다.
+  // 전량은 payload.statements 와 리포트 §원자료에 그대로 남으므로 정보 손실이 아니다.
+  rankLimit?: number
 }
 
 const DEFAULT_MINORITY_MARGIN = 2
 const DEFAULT_K_ANONYMITY = 3
+const DEFAULT_CONSENSUS_MIN_SCORE = 0.5
+const DEFAULT_RANK_LIMIT = 5
 
 function leaningOf(agree: number, disagree: number): Leaning {
   if (agree > disagree) return 'agree'
@@ -111,6 +128,73 @@ function stdDev(values: number[]): number {
   return Math.sqrt(variance)
 }
 
+type RankingLists = {
+  consensus: StatementMetric[]
+  opposed: StatementMetric[]
+  divisive: StatementMetric[]
+  minority: MinorityFlag[]
+}
+
+// 랭킹 4종을 metric 목록에서 만든다. computeSnapshotPayload 와 레거시 스냅샷 교정이 **같은 규칙**을
+// 쓰도록 한 곳에 모았다 — 규칙이 두 벌이면 한쪽만 고쳐지고 발행 스냅샷이 조용히 옛 규칙으로 남는다.
+function buildRankings(
+  visible: StatementMetric[],
+  overallLeaning: Leaning,
+  opts: { consensusMin: number; rankLimit: number; minorityMargin: number }
+): RankingLists {
+  // 합의 판정 — 쏠림이 임계 이상인 것만. 방향(net)으로 찬성 합의 / 반대 합의를 갈라 담는다.
+  // consensusScore 는 방향맹(|찬-반|)이라 이 분리 없이 랭킹하면 반대 다수 발언이 합의점에 실린다.
+  const settled = visible.filter((m) => m.agree + m.disagree > 0 && m.consensusScore >= opts.consensusMin)
+  const byStrength = (a: StatementMetric, b: StatementMetric) =>
+    b.consensusScore - a.consensusScore || b.total - a.total
+
+  const consensus = settled.filter((m) => m.net > 0).slice().sort(byStrength).slice(0, opts.rankLimit)
+  const opposed = settled.filter((m) => m.net < 0).slice().sort(byStrength).slice(0, opts.rankLimit)
+
+  // divisive — 합의 임계 미만 (양쪽 다 표가 있는 발언만). 위 두 목록과 상호배타.
+  const divisive = visible
+    .filter((m) => m.agree > 0 && m.disagree > 0 && m.consensusScore < opts.consensusMin)
+    .slice()
+    .sort((a, b) => b.divisiveScore - a.divisiveScore || b.total - a.total)
+    .slice(0, opts.rankLimit)
+
+  // 소수의견 flag — 전체 다수 방향과 반대 방향 & |표차| >= threshold.
+  // 전체가 tie(팽팽)면 '다수 방향'이 없어 모든 발언이 소수의견으로 폭발하므로 skip (N-1).
+  // **rankLimit 을 적용하지 않는다** — 거버넌스 §7-3(소수의견 보존)에서 상위 N 절단은 소수 관점을
+  // 임의로 떨어뜨리는 행위가 된다. 이 목록만은 임계로만 거른다.
+  const minority: MinorityFlag[] = overallLeaning === 'tie'
+    ? []
+    : visible
+        .filter((m) => m.leaning !== 'tie' && m.leaning !== overallLeaning && Math.abs(m.net) >= opts.minorityMargin)
+        .map((m) => ({ ...m, margin: Math.abs(m.net) }))
+        .sort((a, b) => b.margin - a.margin)
+
+  return { consensus, opposed, divisive, minority }
+}
+
+// 발행 스냅샷 교정 — `opposed` 가 없던 시절 저장된 payload 는 consensus 가 방향맹이고 컷오프도 없다.
+// 저장값을 그대로 렌더하면 **이미 발행·납품된 세션이 계속 틀린 결과판을 보여준다**.
+// 저장된 행을 고쳐 쓰는 대신(발행 스냅샷은 절차 증빙이라 사후 변조 금지) read 시점에 재분류한다.
+// payload.statements 에 metric 전량이 남아 있으므로 현재 규칙으로 다시 나눌 수 있다.
+export function normalizeSnapshotRankings<T extends Partial<SnapshotPayload>>(
+  payload: T,
+  options: ComputeOptions = {}
+): T & RankingLists {
+  const existing = payload as Partial<SnapshotPayload>
+  if (existing.opposed !== undefined) return payload as T & RankingLists
+  const visible = (existing.statements ?? []).filter((m) => !m.suppressed)
+  const overallLeaning = existing.overall?.leaning ?? leaningOf(
+    visible.reduce((a, m) => a + m.agree, 0),
+    visible.reduce((a, m) => a + m.disagree, 0)
+  )
+  const ranked = buildRankings(visible, overallLeaning, {
+    consensusMin: options.consensusMinScore ?? DEFAULT_CONSENSUS_MIN_SCORE,
+    rankLimit: options.rankLimit ?? DEFAULT_RANK_LIMIT,
+    minorityMargin: options.minorityMarginThreshold ?? DEFAULT_MINORITY_MARGIN
+  })
+  return { ...payload, ...ranked }
+}
+
 export function computeSnapshotPayload(
   statementsMeta: StatementMeta[],
   tallies: Record<string, Tally>,
@@ -118,6 +202,8 @@ export function computeSnapshotPayload(
 ): SnapshotPayload {
   const threshold = options.minorityMarginThreshold ?? DEFAULT_MINORITY_MARGIN
   const kThreshold = options.kAnonymityThreshold ?? DEFAULT_K_ANONYMITY
+  const consensusMin = options.consensusMinScore ?? DEFAULT_CONSENSUS_MIN_SCORE
+  const rankLimit = options.rankLimit ?? DEFAULT_RANK_LIMIT
 
   const metrics = statementsMeta.map((m) => metricFor(m, tallies[m.id] ?? { agree: 0, disagree: 0, pass: 0 }, kThreshold))
   // 억제된 발언은 랭킹·전체집계·그룹편차에서 전부 제외 (수치가 이미 0 이지만 명시 필터로 방어).
@@ -129,26 +215,11 @@ export function computeSnapshotPayload(
   const overallPass = visible.reduce((a, m) => a + m.pass, 0)
   const overallLeaning = leaningOf(overallAgree, overallDisagree)
 
-  // consensus 랭킹 — 합의 강도 높은 순 (표가 있는 발언만). 동점은 표수 많은 순.
-  const consensus = visible
-    .filter((m) => m.agree + m.disagree > 0)
-    .slice()
-    .sort((a, b) => b.consensusScore - a.consensusScore || b.total - a.total)
-
-  // divisive 랭킹 — 찬반 팽팽한 순 (양쪽 다 표가 있는 발언만).
-  const divisive = visible
-    .filter((m) => m.agree > 0 && m.disagree > 0)
-    .slice()
-    .sort((a, b) => b.divisiveScore - a.divisiveScore || b.total - a.total)
-
-  // 소수의견 flag — 전체 다수 방향과 반대 방향 & |표차| >= threshold.
-  // 전체가 tie(팽팽)면 '다수 방향'이 없어 모든 발언이 소수의견으로 폭발하므로 skip (N-1).
-  const minority: MinorityFlag[] = overallLeaning === 'tie'
-    ? []
-    : visible
-        .filter((m) => m.leaning !== 'tie' && m.leaning !== overallLeaning && Math.abs(m.net) >= threshold)
-        .map((m) => ({ ...m, margin: Math.abs(m.net) }))
-        .sort((a, b) => b.margin - a.margin)
+  const { consensus, opposed, divisive, minority } = buildRankings(visible, overallLeaning, {
+    consensusMin,
+    rankLimit,
+    minorityMargin: threshold
+  })
 
   // 그룹 간 편차 — 그룹별 평균 찬성률/순찬성 (억제 발언 제외)
   const byGroup = new Map<string, StatementMetric[]>()
@@ -171,6 +242,7 @@ export function computeSnapshotPayload(
     statements: metrics,
     overall: { agree: overallAgree, disagree: overallDisagree, pass: overallPass, leaning: overallLeaning },
     consensus,
+    opposed,
     divisive,
     minority,
     groupDeviation: { groups, agreeRateStdDev: stdDev(rates), agreeRateSpread }

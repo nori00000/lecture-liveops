@@ -44,6 +44,7 @@ export default function ProjectorPage({ params }: { params: Promise<{ id: string
 
   const payload = data?.payload
   const consensus = (payload?.consensus ?? []).slice(0, TOP_N)
+  const opposed = (payload?.opposed ?? []).slice(0, TOP_N)
   const divisive = (payload?.divisive ?? []).slice(0, TOP_N)
   const minority = (payload?.minority ?? []).slice(0, TOP_N)
   const suppressedCount = (payload?.statements ?? []).filter((s) => s.suppressed).length
@@ -65,9 +66,14 @@ export default function ProjectorPage({ params }: { params: Promise<{ id: string
         ) : null}
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <ResultColumn title="공감대" accent="text-accent" empty="표본 부족 — 집계할 합의 항목이 없습니다">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+        <ResultColumn title="공감대 (찬성)" accent="text-accent" empty="표본 부족 — 집계할 합의 항목이 없습니다">
           {consensus.map((m) => <ConsensusRow key={m.statementId} m={m} body={bodyOf(m.statementId)} />)}
+        </ResultColumn>
+
+        {/* 반대 합의를 공감대에 섞으면 "찬 4 / 반 16" 이 공감대로 뜬다. 방향별로 칸을 나눈다. */}
+        <ResultColumn title="반대 합의" accent="text-danger" empty="다수가 반대로 모인 항목이 없습니다">
+          {opposed.map((m) => <OpposedRow key={m.statementId} m={m} body={bodyOf(m.statementId)} />)}
         </ResultColumn>
 
         <ResultColumn title="쟁점" accent="text-warn" empty="표본 부족 — 갈린 항목이 없습니다">
@@ -126,6 +132,16 @@ function ConsensusRow({ m, body }: { m: StatementMetric; body: string }) {
       <p className="text-lg leading-snug">{body}</p>
       <AgreeBar m={m} />
       <div className="text-xs text-textMute">합의 강도 {Math.round(m.consensusScore * 100)}%</div>
+    </div>
+  )
+}
+
+function OpposedRow({ m, body }: { m: StatementMetric; body: string }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-lg leading-snug">{body}</p>
+      <AgreeBar m={m} />
+      <div className="text-xs text-textMute">반대 합의 강도 {Math.round(m.consensusScore * 100)}%</div>
     </div>
   )
 }

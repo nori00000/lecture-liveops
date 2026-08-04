@@ -14,6 +14,7 @@ import { sessions, participants, delibRounds, statements, votes, landscape, aiOb
 import {
   computeSnapshotPayload,
   computeEvidenceKindDistribution,
+  normalizeSnapshotRankings,
   type StatementMetric,
   type MinorityFlag,
   type EvidenceKindBreakdown
@@ -112,6 +113,9 @@ export type ReportRound = {
   // 이 라운드의 집계 대상(visible) 발언 수.
   statementCount: number
   consensus: ReportResultItem[]
+  // 반대 방향 합의 — consensus 와 같은 쏠림 강도지만 다수가 반대한 발언.
+  // 예전에는 consensus 에 섞여 "찬 4 / 반 16" 이 합의점으로 납품됐다.
+  opposed: ReportResultItem[]
   divisive: ReportResultItem[]
   minority: ReportResultItem[]
   // F3: 결과 근거가 된 스냅샷 출처. published 면 발행 스냅샷 저장값, 아니면 리포트 생성 시점 재집계.
@@ -488,7 +492,10 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
     const published = publishedByRound.get(r.id)
     if (published) {
       // 발행 스냅샷 저장값 신뢰 (computeSnapshotPayload 와 동일 계산이므로 재집계하지 않는다).
-      const payload = published.payload as unknown as SnapshotPayloadWithLandscape
+      // 레거시 스냅샷(opposed 이전 발행분)은 read 시점에 현재 규칙으로 재분류한다 — 저장값은 건드리지 않는다.
+      const payload = normalizeSnapshotRankings(
+        published.payload as unknown as SnapshotPayloadWithLandscape
+      )
       return {
         roundId: r.id,
         roundIndex: r.round_index,
@@ -497,6 +504,7 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
         status: r.status,
         statementCount: (payload.statements ?? []).filter((m) => !m.suppressed).length,
         consensus: (payload.consensus ?? []).map((m) => toResultItem(m, bodyById, roundById)),
+        opposed: (payload.opposed ?? []).map((m) => toResultItem(m, bodyById, roundById)),
         divisive: (payload.divisive ?? []).map((m) => toResultItem(m, bodyById, roundById)),
         minority: (payload.minority ?? []).map((m) => toResultItem(m, bodyById, roundById)),
         snapshotId: published.id,
@@ -521,6 +529,7 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
       status: r.status,
       statementCount: payload.statements.filter((m) => !m.suppressed).length,
       consensus: payload.consensus.map((m) => toResultItem(m, bodyById, roundById)),
+      opposed: payload.opposed.map((m) => toResultItem(m, bodyById, roundById)),
       divisive: payload.divisive.map((m) => toResultItem(m, bodyById, roundById)),
       minority: payload.minority.map((m) => toResultItem(m, bodyById, roundById)),
       snapshotId: null,

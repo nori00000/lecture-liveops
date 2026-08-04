@@ -159,11 +159,12 @@ function mdEvidence(e: EvidenceKindBreakdown): string {
 // Markdown
 // ============================================================
 
-function mdResultList(items: ReportResultItem[], kind: 'consensus' | 'divisive' | 'minority'): string {
+function mdResultList(items: ReportResultItem[], kind: 'consensus' | 'opposed' | 'divisive' | 'minority'): string {
   if (items.length === 0) return '- (해당 항목 없음)\n'
   return items
     .map((it) => {
       const score = kind === 'consensus' ? `합의강도 ${pct(it.consensusScore)}`
+        : kind === 'opposed' ? `반대 합의강도 ${pct(it.consensusScore)}`
         : kind === 'divisive' ? `갈림강도 ${pct(it.divisiveScore)}`
         : `표차 ${it.margin ?? 0}`
       // traceability: 원 statementId/roundId 를 함께 남긴다.
@@ -217,7 +218,8 @@ export function planDelibMarkdownExport(report: WorkshopReport): ExportFile[] {
               `## 라운드 ${r.roundIndex} — ${r.title || '(제목 없음)'}\n` +
               `- 형식: ${modeLabel}(${r.mode}) · 상태: ${statusLabel} · 집계 대상 발언 ${r.statementCount}건\n` +
               `- 결과 근거: ${snapshotSourceText(r)}\n\n` +
-              `### 합의점 (consensus)\n${mdResultList(r.consensus, 'consensus')}\n\n` +
+              `### 합의점 — 찬성 우세 (consensus)\n${mdResultList(r.consensus, 'consensus')}\n\n` +
+              `### 반대 합의 — 반대 우세 (opposed)\n> 다수가 **반대**로 모인 발언입니다. 합의 강도는 높지만 방향이 반대이므로 합의점과 분리해 표기합니다.\n${mdResultList(r.opposed, 'opposed')}\n\n` +
               `### 쟁점 (divisive)\n${mdResultList(r.divisive, 'divisive')}\n\n` +
               `### 소수의견 (minority)\n${mdResultList(r.minority, 'minority')}\n\n` +
               `### 의견 지형 (opinion landscape)\n${mdLandscape(r.landscape)}\n` +
@@ -292,11 +294,12 @@ function esc(s: string): string {
     .replace(/'/g, '&#39;')
 }
 
-function htmlResultList(items: ReportResultItem[], kind: 'consensus' | 'divisive' | 'minority'): string {
+function htmlResultList(items: ReportResultItem[], kind: 'consensus' | 'opposed' | 'divisive' | 'minority'): string {
   if (items.length === 0) return '<p class="empty">(해당 항목 없음)</p>'
   const rows = items
     .map((it) => {
       const score = kind === 'consensus' ? `합의강도 ${pct(it.consensusScore)}`
+        : kind === 'opposed' ? `반대 합의강도 ${pct(it.consensusScore)}`
         : kind === 'divisive' ? `갈림강도 ${pct(it.divisiveScore)}`
         : `표차 ${it.margin ?? 0}`
       return (
@@ -391,7 +394,8 @@ export function planDelibHtmlExport(report: WorkshopReport): string {
             `<section class="round"><h3>라운드 ${r.roundIndex} — ${esc(r.title || '(제목 없음)')}</h3>` +
             `<p class="round-meta">형식 ${modeLabel}(${r.mode}) · 상태 ${statusLabel} · 집계 대상 발언 ${r.statementCount}건</p>` +
             `<p class="round-meta">결과 근거: ${esc(snapshotSourceText(r))}</p>` +
-            `<h4>합의점 (consensus)</h4>${htmlResultList(r.consensus, 'consensus')}` +
+            `<h4>합의점 — 찬성 우세 (consensus)</h4>${htmlResultList(r.consensus, 'consensus')}` +
+            `<h4>반대 합의 — 반대 우세 (opposed)</h4><p class="note">다수가 <strong>반대</strong>로 모인 발언입니다. 합의 강도는 높지만 방향이 반대이므로 합의점과 분리해 표기합니다.</p>${htmlResultList(r.opposed, 'opposed')}` +
             `<h4>쟁점 (divisive)</h4>${htmlResultList(r.divisive, 'divisive')}` +
             `<h4>소수의견 (minority)</h4>${htmlResultList(r.minority, 'minority')}` +
             `<h4>의견 지형 (opinion landscape)</h4>${htmlLandscape(r.landscape)}` +
@@ -565,7 +569,8 @@ export async function planDelibXlsxBuffer(report: WorkshopReport): Promise<Buffe
         })
       }
     }
-    push(r.consensus, '합의점', (it) => `합의 ${pct(it.consensusScore)}`)
+    push(r.consensus, '합의점(찬성)', (it) => `합의 ${pct(it.consensusScore)}`)
+    push(r.opposed, '반대 합의', (it) => `반대 합의 ${pct(it.consensusScore)}`)
     push(r.divisive, '쟁점', (it) => `갈림 ${pct(it.divisiveScore)}`)
     push(r.minority, '소수의견', (it) => `표차 ${it.margin ?? 0}`)
   }

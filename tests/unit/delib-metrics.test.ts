@@ -176,3 +176,102 @@ describe('delib metrics — Q4 앱 제출 분포', () => {
     expect(out[0].groups.find((g) => g.groupId === 'g2')?.suppressed).toBe(false);
   });
 });
+
+// ============================================================
+// 결과판 랭킹 의미 회귀 (2026-08-04 데모 QA)
+// 결함: consensusScore = |찬-반|/(찬+반) 이 방향맹이라 "찬 4 / 반 16" 이 합의강도 60% 로
+//       합의점 섹션에 납품됐다. 또 컷오프가 없어 투표 있는 모든 발언이 consensus 와 divisive
+//       양쪽에 전부 실렸다("합의점과 쟁점이 같은 목록").
+// 기존 테스트는 극단값 2건만 써서 두 결함을 모두 통과시켰다.
+// ============================================================
+describe('delib metrics — 합의 방향 분리와 랭킹 컷오프', () => {
+  it('반대 다수 발언은 합의점이 아니라 반대 합의로 간다', () => {
+    const tallies: Record<string, Tally> = {
+      agreed: { agree: 16, disagree: 4, pass: 0 },   // 쏠림 0.6 · 찬성 방향
+      rejected: { agree: 4, disagree: 16, pass: 0 }  // 쏠림 0.6 · 반대 방향 (동일 강도)
+    };
+    const p = computeSnapshotPayload(
+      [{ id: 'agreed', group_id: 'g1' }, { id: 'rejected', group_id: 'g1' }],
+      tallies
+    );
+    // 강도는 같지만 방향이 다르다 — 같은 목록에 담기면 안 된다.
+    expect(p.statements.find((m) => m.statementId === 'rejected')!.consensusScore).toBeCloseTo(0.6);
+    expect(p.consensus.map((m) => m.statementId)).toEqual(['agreed']);
+    expect(p.opposed.map((m) => m.statementId)).toEqual(['rejected']);
+  });
+
+  it('consensus 와 divisive 는 상호배타 — 같은 발언이 양쪽에 실리지 않는다', () => {
+    const tallies: Record<string, Tally> = {
+      strong: { agree: 18, disagree: 2, pass: 0 },  // 0.8 → 합의
+      mild: { agree: 12, disagree: 8, pass: 0 },    // 0.2 → 쟁점
+      split: { agree: 10, disagree: 10, pass: 0 },  // 0.0 → 쟁점
+      no: { agree: 3, disagree: 17, pass: 0 }       // 0.7 → 반대 합의
+    };
+    const p = computeSnapshotPayload(
+      Object.keys(tallies).map((id) => ({ id, group_id: 'g1' })),
+      tallies
+    );
+    const ids = (ms: { statementId: string }[]) => ms.map((m) => m.statementId);
+    const overlap = ids(p.consensus).concat(ids(p.opposed)).filter((id) => ids(p.divisive).includes(id));
+    expect(overlap).toEqual([]);
+    expect(ids(p.consensus)).toEqual(['strong']);
+    expect(ids(p.opposed)).toEqual(['no']);
+    expect(ids(p.divisive).sort()).toEqual(['mild', 'split']);
+  });
+
+  it('rankLimit 컷오프가 목록 길이를 자른다 (기본 5)', () => {
+    const tallies: Record<string, Tally> = {};
+    const metas = [];
+    for (let i = 0; i < 9; i += 1) {
+      tallies[`s${i}`] = { agree: 20 - i, disagree: i, pass: 0 }; // 전부 강한 찬성 합의
+      metas.push({ id: `s${i}`, group_id: 'g1' });
+    }
+    const p = computeSnapshotPayload(metas, tallies);
+    expect(p.consensus).toHaveLength(5);
+    // 컷오프는 랭킹에만 적용된다 — 전량은 statements 에 남아 원자료 추적이 끊기지 않는다.
+    expect(p.statements).toHaveLength(9);
+    expect(computeSnapshotPayload(metas, tallies, { rankLimit: 2 }).consensus).toHaveLength(2);
+  });
+
+  it('소수의견은 컷오프를 받지 않는다 — 거버넌스 §7-3 소수의견 보존', () => {
+    const tallies: Record<string, Tally> = {};
+    const metas = [];
+    for (let i = 0; i < 3; i += 1) {
+      tallies[`maj${i}`] = { agree: 30, disagree: 1, pass: 0 };
+      metas.push({ id: `maj${i}`, group_id: 'g1' });
+    }
+    for (let i = 0; i < 7; i += 1) {
+      tallies[`min${i}`] = { agree: 1, disagree: 5 + i, pass: 0 }; // 전체 다수(agree)와 반대 방향
+      metas.push({ id: `min${i}`, group_id: 'g1' });
+    }
+    const p = computeSnapshotPayload(metas, tallies);
+    expect(p.minority.length).toBe(7); // 5 로 잘리면 소수 관점이 임의로 사라진다
+  });
+
+  it('레거시 스냅샷(opposed 없음)은 read 시점에 재분류된다 — 이미 발행된 세션 교정', async () => {
+    const { normalizeSnapshotRankings } = await import('@/lib/delib/metrics');
+    const tallies: Record<string, Tally> = {
+      agreed: { agree: 16, disagree: 4, pass: 0 },
+      rejected: { agree: 4, disagree: 16, pass: 0 }
+    };
+    const fresh = computeSnapshotPayload(
+      [{ id: 'agreed', group_id: 'g1' }, { id: 'rejected', group_id: 'g1' }],
+      tallies
+    );
+    // 옛 규칙으로 저장된 payload 를 흉내낸다: opposed 없음 + consensus 에 방향 무관 전량.
+    const legacy = {
+      statements: fresh.statements,
+      overall: fresh.overall,
+      consensus: fresh.statements.slice(),
+      divisive: fresh.statements.slice(),
+      minority: [],
+      groupDeviation: fresh.groupDeviation
+    };
+    const fixed = normalizeSnapshotRankings(legacy);
+    expect(fixed.consensus.map((m) => m.statementId)).toEqual(['agreed']);
+    expect(fixed.opposed.map((m) => m.statementId)).toEqual(['rejected']);
+
+    // 이미 신규 규칙으로 계산된 payload 는 건드리지 않는다(멱등).
+    expect(normalizeSnapshotRankings(fresh).consensus.map((m) => m.statementId)).toEqual(['agreed']);
+  });
+});
