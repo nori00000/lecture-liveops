@@ -3,6 +3,7 @@ import { delibGroups, delibRounds, sessions, statements, transcripts } from '@/l
 import { adminContext } from '@/lib/db/neonHelpers'
 import { readRecordingConsent } from '@/lib/action/handlers/delib'
 import { buildTranscriptLensSummary, type TranscriptLensSegmentInput } from '@/lib/delib/transcriptLens'
+import { gateTranscriptSources } from '@/lib/dialogue/access'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -16,13 +17,19 @@ export async function GET(req: Request) {
   const session = await sessions.findById(ctx, sessionId)
   if (!session) return NextResponse.json({ ok: false, error: 'session not found' }, { status: 404 })
 
-  const [groups, rounds, sources, visibleStatements] = await Promise.all([
+  const [groups, rounds, allSources, visibleStatements] = await Promise.all([
     delibGroups.list(ctx, sessionId),
     delibRounds.list(ctx, sessionId),
     transcripts.listSources(ctx, sessionId),
     statements.list(ctx, sessionId, undefined, { visibleOnly: true })
   ])
-  const sourceSegments = await transcripts.listSegmentsBySourceIds(ctx, sources.map((s) => s.id), { limit: 120 })
+  // C2: 전사 원문 read 는 동의 게이트 통과 후에만 (dialogue live/projector 와 동일 helper).
+  // 이 라우트는 운영자 전용이지만 동의 철회의 의미는 "아무 화면에도 안 뜬다" 이므로 예외를 두지 않는다.
+  const recording = readRecordingConsent(session.metadata)
+  const sources = gateTranscriptSources(recording.active, allSources)
+  const sourceSegments = sources.length > 0
+    ? await transcripts.listSegmentsBySourceIds(ctx, sources.map((s) => s.id), { limit: 120 })
+    : []
   const groupById = new Map(groups.map((g) => [g.id, g] as const))
   const sourceById = new Map(sources.map((s) => [s.id, s] as const))
 
@@ -64,7 +71,6 @@ export async function GET(req: Request) {
   const recentSegments = lensSegments.slice(-30)
   const summary = buildTranscriptLensSummary(lensSegments, groups.map((g) => ({ id: g.id, label: g.label })))
   const lastUpdatedAt = lensSegments.reduce<string | null>((max, s) => (max == null || s.createdAt > max ? s.createdAt : max), null)
-  const recording = readRecordingConsent(session.metadata)
 
   return NextResponse.json({
     ok: true,

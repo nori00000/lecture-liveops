@@ -176,13 +176,33 @@ function buildRankings(
 // 저장값을 그대로 렌더하면 **이미 발행·납품된 세션이 계속 틀린 결과판을 보여준다**.
 // 저장된 행을 고쳐 쓰는 대신(발행 스냅샷은 절차 증빙이라 사후 변조 금지) read 시점에 재분류한다.
 // payload.statements 에 metric 전량이 남아 있으므로 현재 규칙으로 다시 나눌 수 있다.
-export function normalizeSnapshotRankings<T extends Partial<SnapshotPayload>>(
+// (삭제됨) normalizeSnapshotRankings — `opposed !== undefined` 로 "신규 포맷"을 판정했는데,
+// 그 가드는 **필드 존재**만 보고 값의 정합성은 보지 않았다. 부분 마이그레이션이나 수기 보정으로
+// `opposed: []` 가 붙은 레거시 payload 는 교정을 건너뛰어 "찬 4 / 반 16"이 합의점에 그대로 남는다.
+// 신규 포맷을 다시 분류해도 같은 규칙·같은 수치라 결과가 동일하므로, 판정하지 말고 **항상**
+// rerankSnapshot 을 쓴다. (Codex 적대 리뷰 2026-08-05 지적)
+
+// 저장된 payload.statements 로 랭킹을 **항상** 다시 만든다. 집계 수치(찬/반/유보·강도)는 저장값
+// 그대로이고 목록 분할만 다시 하므로, 발행 스냅샷을 신뢰한다는 원칙(F3)을 깨지 않는다.
+// 쓰임새: 리포트는 화면용 상위 N 컷오프 없이 임계를 통과한 항목을 전부 실어야 한다
+// (납품 문서는 스크롤이 되므로 자를 이유가 없고, 잘린 항목은 분류 없이 원자료에만 남아 증빙이 끊긴다).
+export function rerankSnapshot<T extends Partial<SnapshotPayload>>(
   payload: T,
   options: ComputeOptions = {}
 ): T & RankingLists {
   const existing = payload as Partial<SnapshotPayload>
-  if (existing.opposed !== undefined) return payload as T & RankingLists
-  const visible = (existing.statements ?? []).filter((m) => !m.suppressed)
+  // statements 가 없는 payload 는 재분류의 재료가 없다. 빈 목록으로 덮으면 이미 발행된 결과판이
+  // 통째로 사라지므로, 저장된 목록을 그대로 둔다(교정 불가 상태를 지우는 것보다 낫다).
+  if ((existing.statements ?? []).length === 0) {
+    return {
+      ...payload,
+      consensus: existing.consensus ?? [],
+      opposed: existing.opposed ?? [],
+      divisive: existing.divisive ?? [],
+      minority: existing.minority ?? []
+    } as T & RankingLists
+  }
+  const visible = existing.statements!.filter((m) => !m.suppressed)
   const overallLeaning = existing.overall?.leaning ?? leaningOf(
     visible.reduce((a, m) => a + m.agree, 0),
     visible.reduce((a, m) => a + m.disagree, 0)

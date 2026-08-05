@@ -248,8 +248,8 @@ describe('delib metrics — 합의 방향 분리와 랭킹 컷오프', () => {
     expect(p.minority.length).toBe(7); // 5 로 잘리면 소수 관점이 임의로 사라진다
   });
 
-  it('레거시 스냅샷(opposed 없음)은 read 시점에 재분류된다 — 이미 발행된 세션 교정', async () => {
-    const { normalizeSnapshotRankings } = await import('@/lib/delib/metrics');
+  it('레거시 스냅샷은 read 시점에 재분류된다 — opposed 필드가 붙어 있어도 값으로 판단한다', async () => {
+    const { rerankSnapshot } = await import('@/lib/delib/metrics');
     const tallies: Record<string, Tally> = {
       agreed: { agree: 16, disagree: 4, pass: 0 },
       rejected: { agree: 4, disagree: 16, pass: 0 }
@@ -258,20 +258,38 @@ describe('delib metrics — 합의 방향 분리와 랭킹 컷오프', () => {
       [{ id: 'agreed', group_id: 'g1' }, { id: 'rejected', group_id: 'g1' }],
       tallies
     );
-    // 옛 규칙으로 저장된 payload 를 흉내낸다: opposed 없음 + consensus 에 방향 무관 전량.
-    const legacy = {
+    const legacyBase = {
       statements: fresh.statements,
       overall: fresh.overall,
+      // 옛 규칙: 방향 무관 전량이 consensus 이자 divisive.
       consensus: fresh.statements.slice(),
       divisive: fresh.statements.slice(),
       minority: [],
       groupDeviation: fresh.groupDeviation
     };
-    const fixed = normalizeSnapshotRankings(legacy);
+
+    const fixed = rerankSnapshot(legacyBase);
     expect(fixed.consensus.map((m) => m.statementId)).toEqual(['agreed']);
     expect(fixed.opposed.map((m) => m.statementId)).toEqual(['rejected']);
 
-    // 이미 신규 규칙으로 계산된 payload 는 건드리지 않는다(멱등).
-    expect(normalizeSnapshotRankings(fresh).consensus.map((m) => m.statementId)).toEqual(['agreed']);
+    // Codex 적대 리뷰 #3: `opposed` 필드가 **존재하기만** 하면 신규 포맷으로 보고 건너뛰던 가드가 있었다.
+    // 부분 마이그레이션·수기 보정으로 `opposed: []` 가 붙은 레거시는 교정을 못 받아
+    // "찬 4 / 반 16" 이 합의점에 그대로 남는다. 필드 존재가 아니라 값으로 다시 나눠야 한다.
+    const legacyWithEmptyOpposed = { ...legacyBase, opposed: [] as typeof fresh.opposed };
+    const fixed2 = rerankSnapshot(legacyWithEmptyOpposed);
+    expect(fixed2.consensus.map((m) => m.statementId)).toEqual(['agreed']);
+    expect(fixed2.opposed.map((m) => m.statementId)).toEqual(['rejected']);
+
+    // 신규 포맷을 다시 돌려도 결과가 같다(멱등).
+    expect(rerankSnapshot(fresh).consensus.map((m) => m.statementId)).toEqual(['agreed']);
+  });
+
+  it('statements 가 없는 payload 는 저장된 목록을 지우지 않는다', async () => {
+    const { rerankSnapshot } = await import('@/lib/delib/metrics');
+    // 재분류의 재료(statements)가 없으면 빈 목록으로 덮어 이미 발행된 결과판을 날리면 안 된다.
+    const legacy = { consensus: [{ statementId: 'x' }] } as unknown as Parameters<typeof rerankSnapshot>[0];
+    const out = rerankSnapshot(legacy);
+    expect(out.consensus).toHaveLength(1);
+    expect(out.opposed).toEqual([]);
   });
 });

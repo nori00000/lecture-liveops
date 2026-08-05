@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { sessions, landscape, statements } from '@/lib/db/repo'
 import { adminContext } from '@/lib/db/neonHelpers'
 import type { SnapshotPayloadWithLandscape } from '@/lib/delib/landscapeMetrics'
-import { normalizeSnapshotRankings } from '@/lib/delib/metrics'
+import { rerankSnapshot } from '@/lib/delib/metrics'
 
 // 프로젝터 결과판 데이터 — 발표용 스냅샷 스냅샷(consensus/divisive/소수의견).
 // 이미 publish 된 스냅샷의 집계 payload 만 노출한다(개인 표 없음, k-익명 억제는 metrics 에서 적용됨).
@@ -33,9 +33,10 @@ export async function GET(req: Request) {
 
   // M3: 결과판은 랭킹(consensus/divisive/minority)에 실제 표시되는 발언 원문만 내려보낸다.
   // suppressed(k-익명 억제)·랭킹 미표시 발언의 원문은 payload 로 새어나가지 않게 allowlist 로 제외한다.
-  // 레거시 스냅샷(opposed 이전 발행분)은 consensus 가 방향맹이고 컷오프도 없다 — read 시점에 재분류한다.
-  // 저장된 발행 스냅샷 자체는 절차 증빙이므로 변조하지 않는다 (리포트와 동일 규칙).
-  const stored = normalizeSnapshotRankings(
+  // 랭킹은 read 시점에 항상 다시 나눈다 — 레거시(방향맹 consensus) 교정 목적이며, 신규 포맷도
+  // 같은 규칙·같은 수치라 결과가 동일하다. 저장된 발행 스냅샷 자체는 절차 증빙이므로 변조하지 않는다.
+  // 여기서는 리포트와 달리 상위 N 컷오프(기본 5)를 유지한다 — 방 전체 화면의 가독성 제약.
+  const stored = rerankSnapshot(
     latestPublished.payload as unknown as SnapshotPayloadWithLandscape
   )
   // H2(2026-07-22): landscape.projection(개별 좌표)은 익명이 아니다 — 좌표는 개인 투표 벡터의
@@ -58,9 +59,18 @@ export async function GET(req: Request) {
     ...(payload.minority ?? []).map((m) => m.statementId),
     ...landscapeIds
   ])
+  // 원문 노출 범위 — 이 화면은 방 전체가 본다.
+  // dialogue projector 와 달리 여기서는 visibility='group' 발언을 제외하지 않는다:
+  //   이 payload 는 운영자가 delib.publish_snapshot 으로 **명시 발행한** 스냅샷에서만 나오고,
+  //   발행 전에는 published:false 로 아무것도 내려가지 않는다. 그 발행이 곧 진행자 승인 게이트다
+  //   (DIALOGUE-LENS Must-Never #2 가 요구하는 승인). 실시간·무승인인 dialogue projector 와 다르다.
+  //   현재 참가자 UI 는 visibility 를 고르게 하지 않고 'group' 으로 고정 제출하므로,
+  //   group 을 제외하면 결과판이 항상 비어 MVP 자체가 동작하지 않는다.
+  // 다만 'private' 은 어떤 경우에도 방 전체 화면에 올리지 않는다 — 승인과 무관한 비공개 표기다.
   const visible = await statements.list(ctx, sessionId, latestPublished.round_id ?? undefined, { visibleOnly: true })
   const statementBodies: Record<string, string> = {}
   for (const s of visible) {
+    if (s.visibility === 'private') continue
     if (shownIds.has(s.id)) statementBodies[s.id] = s.body
   }
 

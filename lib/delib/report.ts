@@ -14,7 +14,7 @@ import { sessions, participants, delibRounds, statements, votes, landscape, aiOb
 import {
   computeSnapshotPayload,
   computeEvidenceKindDistribution,
-  normalizeSnapshotRankings,
+  rerankSnapshot,
   type StatementMetric,
   type MinorityFlag,
   type EvidenceKindBreakdown
@@ -30,6 +30,12 @@ import {
   type SnapshotPayloadWithLandscape
 } from './landscapeMetrics'
 import type { RoundMode, RoundStatus, ModerationState, ModerationAction, ModerationActorRole, Role, LandscapeSnapshot, AiObservationKind } from '@/lib/db/schema'
+
+// 리포트는 랭킹 목록에 상위 N 컷오프를 두지 않는다.
+// 컷오프는 프로젝터 화면 가독성을 위한 것이고(page.tsx 가 별도로 상위 5건만 렌더한다),
+// 납품 문서에서 잘라내면 임계를 통과한 합의·쟁점 항목이 **분류 없이 원자료에만 남아** 증빙이 끊긴다.
+// 목록의 의미는 컷오프가 아니라 consensusMinScore 임계가 만든다.
+const REPORT_RANK_LIMIT = Number.MAX_SAFE_INTEGER
 
 // Q2: 리포트에 실리는 "검토가 필요한 주장" 1건 (DELIBERATION-QUALITY-PLAN §2 Q2).
 // **퍼실리테이터가 승인(approved)한 것만** 여기에 들어온다 — pending/rejected 는 영구 제외.
@@ -499,9 +505,12 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
     const published = publishedByRound.get(r.id)
     if (published) {
       // 발행 스냅샷 저장값 신뢰 (computeSnapshotPayload 와 동일 계산이므로 재집계하지 않는다).
-      // 레거시 스냅샷(opposed 이전 발행분)은 read 시점에 현재 규칙으로 재분류한다 — 저장값은 건드리지 않는다.
-      const payload = normalizeSnapshotRankings(
-        published.payload as unknown as SnapshotPayloadWithLandscape
+      // 발행 스냅샷의 랭킹을 리포트용으로 다시 나눈다 — 수치는 저장값 그대로, 목록 분할만.
+      //  (a) 레거시(opposed 이전) 스냅샷의 방향맹 consensus 교정
+      //  (b) 화면용 상위 N 컷오프 제거 — 납품 문서는 임계 통과 항목을 전부 실어야 한다.
+      const payload = rerankSnapshot(
+        published.payload as unknown as SnapshotPayloadWithLandscape,
+        { rankLimit: REPORT_RANK_LIMIT }
       )
       return {
         roundId: r.id,
@@ -526,7 +535,8 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
     const roundStatements = allStatements.filter((s) => s.round_id === r.id && s.moderation_state === 'visible')
     const payload = computeSnapshotPayload(
       roundStatements.map((s) => ({ id: s.id, group_id: s.group_id })),
-      tallies
+      tallies,
+      { rankLimit: REPORT_RANK_LIMIT }
     )
     return {
       roundId: r.id,

@@ -19,7 +19,9 @@ beforeAll(() => {
 
 import { GET as liveGET } from '@/app/api/data/dialogue/live/route';
 import { GET as projectorGET } from '@/app/api/data/dialogue/projector/route';
-import { updateWorkshopSettings, upsertGroup, submitStatement } from '@/lib/action/handlers/delib';
+import { updateWorkshopSettings, upsertGroup, submitStatement, computeSnapshot, publishSnapshot, registerParticipant, voteStatement } from '@/lib/action/handlers/delib';
+import { GET as projectorViewGET } from '@/app/api/data/delib/projector-view/route';
+import { GET as transcriptViewGET } from '@/app/api/data/delib/transcript-view/route';
 import { getStore, resetStore, bumpRevision } from '@/lib/db/fixture/store';
 import type { AxActionEnvelope } from '@/lib/action/envelope';
 
@@ -93,6 +95,13 @@ async function projectorBody(): Promise<Record<string, unknown>> {
   expect(res.status).toBe(200);
   return res.json();
 }
+// 운영자 콘솔의 라이브 전사 렌즈. Codex 적대 리뷰 2026-08-05: C2 를 dialogue 두 라우트만 고쳐서
+// 같은 결함이 이 세 번째 전사 read 경로에 그대로 남아 있었다(전사를 먼저 읽고 동의는 배지로만 사용).
+async function transcriptViewBody(): Promise<Record<string, unknown>> {
+  const res = await transcriptViewGET(new Request(`http://localhost/api/data/delib/transcript-view?sessionId=${SID}`));
+  expect(res.status).toBe(200);
+  return res.json();
+}
 
 describe('C2 — 전사 read 동의 게이트 (live / projector 공통)', () => {
   beforeEach(() => resetStore());
@@ -101,7 +110,7 @@ describe('C2 — 전사 read 동의 게이트 (live / projector 공통)', () => 
     await saveSettings(false);
     seedTranscript({ consentConfirmed: true });
 
-    for (const body of [await liveBody(), await projectorBody()]) {
+    for (const body of [await liveBody(), await projectorBody(), await transcriptViewBody()]) {
       expect(JSON.stringify(body)).not.toContain(SECRET);
       expect(body.mode).toBe('statement_preview');
     }
@@ -111,7 +120,7 @@ describe('C2 — 전사 read 동의 게이트 (live / projector 공통)', () => 
     await saveSettings(true);
     seedTranscript({ consentConfirmed: false });
 
-    for (const body of [await liveBody(), await projectorBody()]) {
+    for (const body of [await liveBody(), await projectorBody(), await transcriptViewBody()]) {
       expect(JSON.stringify(body)).not.toContain(SECRET);
       expect(body.mode).toBe('statement_preview');
     }
@@ -170,5 +179,59 @@ describe('C3 — projector 는 public 발언만 방 전체에 노출한다', () 
 
     const body = await liveBody();
     expect(JSON.stringify(body)).toContain(GROUP_ONLY);
+  });
+});
+
+// ============================================================
+// delib 결과판(projector-view) 커버리지 — Codex 적대 리뷰 2026-08-05 #1/#5.
+// 지적: dialogue 두 라우트만 테스트해서, 실제로 발행 스냅샷 원문을 방 전체에 렌더하는
+//       /api/data/delib/projector-view 는 검증 공백이었다.
+// 판정: group 발언 노출 자체는 결함이 아니다 — 이 화면은 운영자의 명시적 publish_snapshot
+//       발행 후에만 내용이 내려가고, 그 발행이 진행자 승인 게이트다. 대신 아래 두 가지를 못박는다.
+//   (a) 발행 전에는 아무 원문도 내려가지 않는다.
+//   (b) visibility='private' 은 발행 후에도 방 전체 화면에 올라가지 않는다.
+// ============================================================
+describe('delib 결과판 — 발행 게이트와 private 제외', () => {
+  beforeEach(() => resetStore());
+
+  it('발행 전에는 published:false 이고 발언 원문이 하나도 내려가지 않는다', async () => {
+    await saveSettings(false);
+    await submitStatement({ envelope: env('delib.submit_statement', { sessionId: SID, body: '발행전에는안보여야함' }) });
+    await computeSnapshot({ envelope: env('delib.compute_snapshot', { sessionId: SID }) });
+
+    const res = await projectorViewGET(new Request(`http://localhost/api/data/delib/projector-view?sessionId=${SID}`));
+    const body = await res.json();
+    expect(body.published).toBe(false);
+    expect(JSON.stringify(body)).not.toContain('발행전에는안보여야함');
+  });
+
+  it("발행 후에도 visibility='private' 발언 원문은 내려가지 않는다", async () => {
+    await saveSettings(false);
+    const priv = (await submitStatement({
+      envelope: env('delib.submit_statement', { sessionId: SID, body: '비공개표기발언입니다', visibility: 'private' })
+    })).data as { statementId: string };
+    const grp = (await submitStatement({
+      envelope: env('delib.submit_statement', { sessionId: SID, body: '분임공유발언입니다', visibility: 'group' })
+    })).data as { statementId: string };
+    // 랭킹에 올라야 원문이 payload 에 실린다 — k-익명 임계(3표) 이상 + 찬성 쏠림.
+    for (let i = 0; i < 4; i += 1) {
+      const p = (await registerParticipant({
+        envelope: env('delib.register_participant', { sessionId: SID, displayAlias: `p${i}`, anonHandle: `a${i}` })
+      })).data as { participantId: string };
+      for (const st of [priv.statementId, grp.statementId]) {
+        await voteStatement({
+          envelope: env('delib.vote_statement', { statementId: st, participantId: p.participantId, vote: 'agree' })
+        });
+      }
+    }
+    const snap = await computeSnapshot({ envelope: env('delib.compute_snapshot', { sessionId: SID }) });
+    await publishSnapshot({ envelope: env('delib.publish_snapshot', { snapshotId: (snap.data as { snapshotId: string }).snapshotId }) });
+
+    const res = await projectorViewGET(new Request(`http://localhost/api/data/delib/projector-view?sessionId=${SID}`));
+    const body = await res.json();
+    expect(body.published).toBe(true);
+    expect(JSON.stringify(body)).not.toContain('비공개표기발언입니다');
+    // group 은 발행(=진행자 승인)을 거쳤으므로 결과판에 나온다 — 이걸 막으면 MVP 결과판이 항상 빈다.
+    expect(JSON.stringify(body)).toContain('분임공유발언입니다');
   });
 });

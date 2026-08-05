@@ -335,6 +335,11 @@ export const submitStatement: Handler = async ({ envelope, trusted }) => {
   // 저자 신원(C-A)과 같은 원칙: 참가자 경로의 그룹 귀속은 **서버가 조회한 membership** 만 사용하고,
   // 클라이언트가 다른 groupId 를 주장하면 저장하지 않고 거부한다(조용한 무시 대신 명시적 거부).
   // 쿠키의 trusted.groupId 가 아니라 DB membership 을 권위로 삼는다 — 재배정 후 쿠키는 stale 일 수 있다.
+  // 그룹 미배정 참가자는 group_id=null 로 저장된다(거부하지 않는다) — plenary 라운드는 분임 배정 없이
+  // 진행되는 정상 경로이기 때문이다. 이때 visibility='group' + group_id=null 조합은 Neon RLS
+  // (0015 ax_delib_statements_read: `visibility='group' and (group_id is null or ...)`)에서
+  // **세션 전체 참가자에게 읽기 허용**된다. 이는 누락이 아니라 plenary 의 의도된 범위다.
+  // 분임에 배정된 참가자의 발언만 그 분임으로 좁혀진다.
   let groupId = input.groupId ?? null
   if (envelope.actor.role === 'participant') {
     const membership = await delibGroups.findMembershipByParticipant(ctx, authorParticipantId!)

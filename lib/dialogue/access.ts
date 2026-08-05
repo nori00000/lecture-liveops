@@ -27,7 +27,7 @@ export function gateTranscriptSources(recordingActive: boolean, sources: Transcr
 }
 
 /**
- * C3 (projector 그룹 발언 노출 차단) — 방 전체 화면에 띄울 수 있는 발언인지.
+ * C3 (projector 그룹 발언 노출 차단) — 방 전체 화면(Room Mirror)에 띄울 수 있는 발언인지.
  *
  * 기존 결함: projector 가 `visibleOnly:true`(= moderation 통과)만 걸러서
  * `visibility='group'` 발언까지 방 전체 스크린에 원문으로 띄웠다. 그룹 안에서만
@@ -35,6 +35,18 @@ export function gateTranscriptSources(recordingActive: boolean, sources: Transcr
  *
  * moderation 통과는 **필요조건일 뿐 충분조건이 아니다**: 전체 화면에는
  * 화자가 명시적으로 전체 공개(`public`)를 선택한 발언만 올린다.
+ *
+ * ⚠️ 현재 상태 — 이 게이트는 **Room Mirror 의 statement 프리뷰를 사실상 비활성화한다.**
+ * 참가자 UI(`app/p/workshop/page.tsx`)와 콘솔이 `visibility: 'group'` 을 하드코딩하고 있어
+ * `public` 발언을 만드는 경로가 코드에 존재하지 않는다. 즉 이 함수는 항상 false 를 돌려주고,
+ * 전사 미연결(statement_preview) 모드의 Room Mirror 는 빈 화면이 된다.
+ * 이는 **의도된 fail-closed 상태**다 — 노출보다 미표시가 안전하고, 원래 이 화면에 뜨면 안 될
+ * 발언이 뜨고 있었다. 기능을 되살리는 올바른 방법은 이 게이트를 푸는 것이 아니라
+ * C4(진행자 승인 게이트)를 구현해 "승인된 artifact 만 표시"로 바꾸는 것이다
+ * (docs/HANDOFF-2026-07-31.md §1 C4, DIALOGUE-LENS-PRODUCT.md §4 미구현 3번째 항목).
+ *
+ * 비교: delib 결과판(`/api/data/delib/projector-view`)은 이 게이트를 쓰지 않는다.
+ * 그쪽은 운영자의 명시적 `delib.publish_snapshot` 발행이 승인 게이트 역할을 하기 때문이다.
  */
 export function isRoomVisibleStatement(visibility: StatementVisibility): boolean {
   return visibility === 'public'
