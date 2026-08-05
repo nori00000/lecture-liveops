@@ -420,6 +420,13 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
 
   // Q1: 근거 유형 분포는 스냅샷에 저장되지 않으므로(발행 여부와 무관하게) 발언에서 직접 집계한다.
   // 집계 대상은 visible 발언만 — hidden/flagged 는 결과 집계에서 제외하는 기존 원칙(M-1)과 동일.
+  //
+  // **분임 단위 분해는 리포트에 싣지 않는다** (groupId: null 로 집계).
+  // 분임 단위는 목표 규모(30~80명·4~6분임)에서 사실상 항상 억제된다 — 셀 억제 규칙상
+  // 0 이 아닌 근거 유형 셀이 모두 3건 이상이어야 하므로 분임당 균형 잡힌 발언이 6~9건 필요한데,
+  // 90분 워크숍에서 비현실적이다. 게다가 분임 분해를 함께 실으면 차분 복원을 막으려고
+  // 라운드 전체까지 연쇄 억제되어(group_residual) **아무 수치도 남지 않는다**.
+  // 분해를 빼면 노출면이 줄면서(분임 셀 자체가 나가지 않음) 라운드 단위 분포가 살아난다.
   const evidenceKindForRound = (roundId: string): EvidenceKindBreakdown =>
     computeEvidenceKindDistribution(
       allStatements
@@ -427,7 +434,7 @@ export async function buildWorkshopReport(ctx: RlsContext, sessionId: string): P
         .map((s) => ({
           statementId: s.id,
           roundId: s.round_id,
-          groupId: s.group_id,
+          groupId: null,
           evidenceKind: s.evidence_kind,
           authorParticipantId: s.author_participant_id
         }))

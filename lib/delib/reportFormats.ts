@@ -67,12 +67,26 @@ const EVIDENCE_ORDER: Array<{ key: 'experience' | 'source' | 'estimate' | 'unspe
 
 const EVIDENCE_NOTE =
   '참가자가 스스로 고른 근거 유형입니다. 시스템이 발언을 판정하지 않으므로 오탐이 없으며, 자기보고이므로 실제 근거 수준과 다를 수 있습니다. ' +
-  '개인 단위는 표기하지 않고 기여자 3명 미만 그룹은 억제합니다.'
+  '개인 단위는 표기하지 않습니다. 분임 단위 분해는 소규모에서 특정 참가자의 태깅이 드러나므로 싣지 않고, ' +
+  '라운드 단위로만 집계합니다. 기여자가 3명 미만이거나 근거 유형 중 3건 미만인 항목이 있으면 그 라운드는 미표기 처리됩니다.'
 
-const EVIDENCE_SUPPRESSED_TEXT = '표본 부족(기여자 3명 미만) — 개인 태깅 역추론 방지를 위해 미표기'
+// 억제 사유별 문구. 예전에는 사유와 무관하게 "기여자 3명 미만" 한 줄을 썼는데,
+// 기여자가 3명 이상인데도 그렇게 표기돼 납품물에 사실과 다른 설명이 실렸다.
+// suppressionReason 을 그대로 읽어 실제 판정을 적는다.
+const EVIDENCE_SUPPRESSED_TEXT: Record<string, string> = {
+  contributors: '미표기 — 이 범위의 기여자가 3명 미만이라 개인 태깅이 그대로 드러납니다.',
+  small_cell: '미표기 — 근거 유형 중 건수가 3건 미만인 항목이 있어 특정 개인이 지목될 수 있습니다.',
+  group_residual: '미표기 — 같은 라운드의 다른 분임이 미표기라, 이 값을 함께 실으면 뺄셈으로 복원됩니다.',
+  complementary: '미표기 — 미표기 분임이 하나뿐이면 잔차로 복원되므로 이 분임도 함께 가립니다.'
+}
+const EVIDENCE_SUPPRESSED_FALLBACK = '미표기 — 개인 태깅 역추론 방지를 위해 수치를 표시하지 않습니다.'
+
+function evidenceSuppressedText(d: EvidenceKindDistribution): string {
+  return EVIDENCE_SUPPRESSED_TEXT[d.suppressionReason ?? ''] ?? EVIDENCE_SUPPRESSED_FALLBACK
+}
 
 function evidenceLine(d: EvidenceKindDistribution): string {
-  if (d.suppressed) return EVIDENCE_SUPPRESSED_TEXT
+  if (d.suppressed) return evidenceSuppressedText(d)
   if (d.total === 0) return '집계 대상 발언 없음'
   return EVIDENCE_ORDER.map((o) => `${o.label} ${d.counts[o.key]}건(${pct(d.ratios[o.key])})`).join(' · ') + ` — 총 ${d.total}건`
 }
@@ -147,12 +161,10 @@ function mdLandscape(ls: ReportLandscape | null): string {
   return `${head}- 모든 그룹이 함께 지지한 의견(GIC 상위)\n${gic}- 그룹별 대표 의견\n${reps}${mdAvoided(ls)}`
 }
 
+// 분임별 분해는 싣지 않는다 — 상세 근거는 EVIDENCE_NOTE 참조.
+// byGroup 이 비어 있는 것이 정상이며, 값이 실려 오더라도 렌더하지 않는다.
 function mdEvidence(e: EvidenceKindBreakdown): string {
-  const head = `- 라운드 전체: ${evidenceLine(e.overall)}\n`
-  const groups = e.byGroup.length === 0
-    ? '  - (그룹 배정된 발언 없음)\n'
-    : e.byGroup.map((g) => `  - 그룹 \`${g.groupId}\`: ${evidenceLine(g.distribution)}\n`).join('')
-  return `${head}- 그룹별\n${groups}`
+  return `- 라운드 전체: ${evidenceLine(e.overall)}\n`
 }
 
 // ============================================================
@@ -369,13 +381,9 @@ function htmlLandscape(ls: ReportLandscape | null): string {
   return `${head}<h5>모든 그룹이 함께 지지한 의견 (GIC 상위)</h5>${gic}<h5>그룹별 대표 의견</h5>${reps}${htmlAvoided(ls)}`
 }
 
+// md 와 동일 — 분임별 분해는 싣지 않는다.
 function htmlEvidence(e: EvidenceKindBreakdown): string {
-  const rows = [
-    `<li><div class="body">라운드 전체</div><div class="meta">${esc(evidenceLine(e.overall))}</div></li>`,
-    ...e.byGroup.map(
-      (g) => `<li><div class="body">그룹 <code>${esc(g.groupId)}</code></div><div class="meta">${esc(evidenceLine(g.distribution))}</div></li>`
-    )
-  ].join('')
+  const rows = `<li><div class="body">라운드 전체</div><div class="meta">${esc(evidenceLine(e.overall))}</div></li>`
   return `<p class="note">${esc(EVIDENCE_NOTE)}</p><ul class="results">${rows}</ul>`
 }
 
@@ -663,7 +671,7 @@ export async function planDelibXlsxBuffer(report: WorkshopReport): Promise<Buffe
   for (const r of report.rounds) {
     const push = (scope: string, d: EvidenceKindDistribution) => {
       if (d.suppressed) {
-        evi.addRow({ round: r.roundIndex, scope, experience: '', source: '', estimate: '', unspecified: '', total: '', note: EVIDENCE_SUPPRESSED_TEXT })
+        evi.addRow({ round: r.roundIndex, scope, experience: '', source: '', estimate: '', unspecified: '', total: '', note: evidenceSuppressedText(d) })
         return
       }
       evi.addRow({
@@ -676,8 +684,8 @@ export async function planDelibXlsxBuffer(report: WorkshopReport): Promise<Buffe
         note: d.total === 0 ? '집계 대상 발언 없음' : ''
       })
     }
+    // 분임별 분해는 싣지 않는다 (md/html 과 동일).
     push('라운드 전체', r.evidenceKind.overall)
-    for (const g of r.evidenceKind.byGroup) push(`그룹 ${g.groupId}`, g.distribution)
   }
 
   // 시트 (조건부): 검토가 필요한 주장 — 승인된 항목이 있을 때만 시트를 만든다.

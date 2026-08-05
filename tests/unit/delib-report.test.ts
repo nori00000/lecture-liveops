@@ -18,7 +18,9 @@ import {
   registerParticipant,
   submitStatement,
   voteStatement,
-  moderateStatement
+  moderateStatement,
+  upsertGroup,
+  assignParticipant
 } from '@/lib/action/handlers/delib';
 import { buildWorkshopReport } from '@/lib/delib/report';
 import { planDelibMarkdownDocument, planDelibHtmlExport, planDelibXlsxBuffer } from '@/lib/delib/reportFormats';
@@ -200,5 +202,75 @@ describe('delib workshop report (fixture mode)', () => {
     expect(top.body).toBe('만장일치 합의 발언');
     // 원자료 섹션에 동일 statementId 가 존재한다 (결론→원자료 연결).
     expect(report!.rawData.map((r) => r.statementId)).toContain(top.statementId);
+  });
+});
+
+// ============================================================
+// Q1 근거 유형 분포의 표시 단위·억제 문구 (2026-08-05 데모 QA 후속)
+// 결함 1: 억제 사유가 4종(contributors/small_cell/group_residual/complementary)인데
+//         리포트는 사유와 무관하게 "표본 부족(기여자 3명 미만)" 한 줄만 찍었다.
+//         기여자가 3명 이상인데도 그렇게 표기돼 납품물에 사실과 다른 설명이 실렸다.
+// 결함 2: 분임별 분해를 함께 실으면 차분 복원 방어가 라운드 전체까지 연쇄 억제해
+//         (group_residual) 목표 규모에서 아무 수치도 남지 않았다.
+// ============================================================
+describe('delib report — 근거 유형 분포 표시 단위와 억제 문구', () => {
+  beforeEach(async () => {
+    resetStore();
+    await confirmConsent();
+  });
+
+  it('분임별 분해를 싣지 않아 라운드 단위 분포가 실제로 표시된다', async () => {
+    const roundId = await bootRound('R0');
+    // 분임 3개 × 저자 1명 × 발언 3건(유형별 1건).
+    // 분임 단위로 보면 각 셀이 1건이라 억제되고, 그 억제가 라운드 전체로 연쇄(group_residual)된다.
+    // 라운드 단위로만 집계하면 경험/자료/추정이 각 3건이라 억제 없이 표시된다 — 이 차이가 이 테스트의 핵심.
+    const kinds = ['experience', 'source', 'estimate'] as const;
+    for (let g = 0; g < 3; g += 1) {
+      const gr = await upsertGroup({ envelope: env('delib.upsert_group', 'instructor', { sessionId: SID, label: `${g + 1}조` }) });
+      const groupId = (gr.data as { groupId: string }).groupId;
+      const pid = await newParticipant(`참가자${g}`, `anon-${g}`);
+      await assignParticipant({ envelope: env('delib.assign_participant', 'instructor', { participantId: pid, groupId }) });
+      for (const kind of kinds) {
+        await submitStatement({
+          envelope: env('delib.submit_statement', 'participant', { sessionId: SID, roundId, body: `${kind}-${g}`, evidenceKind: kind }),
+          trusted: { participantId: pid }
+        });
+      }
+    }
+
+    const report = await buildWorkshopReport(adminContext(SID), SID);
+    // 발언에는 분임이 실제로 붙어 있다 — 분해를 안 싣는 것이지 데이터가 없는 게 아니다.
+    expect(report!.rawData.every((r) => r.groupId != null)).toBe(true);
+
+    const md = planDelibMarkdownDocument(report!);
+    // 라운드 단위 수치가 살아 있다 — 분해를 함께 실으면 전부 0 으로 마스킹된다.
+    expect(report!.rounds[0].evidenceKind.overall.suppressed).toBe(false);
+    expect(md).toContain('경험(직접 겪음) 3건');
+    expect(md).toContain('총 9건');
+    // 분임별 줄은 납품물에 실리지 않는다.
+    expect(md).not.toContain('- 그룹별');
+  });
+
+  it('억제 문구가 실제 사유를 반영한다 — 기여자가 충분한데 "기여자 3명 미만"이라 하지 않는다', async () => {
+    const roundId = await bootRound('R0');
+    const authors = await Promise.all([
+      newParticipant('갑', 'a1'), newParticipant('을', 'a2'), newParticipant('병', 'a3')
+    ]);
+    // 기여자 3명(임계 통과) 이지만 각 셀이 1건뿐 → small_cell 로 억제되어야 한다.
+    const kinds = ['experience', 'source', 'estimate'] as const;
+    for (let i = 0; i < 3; i += 1) {
+      await submitStatement({
+        envelope: env('delib.submit_statement', 'participant', { sessionId: SID, roundId, body: `s${i}`, evidenceKind: kinds[i] }),
+        trusted: { participantId: authors[i] }
+      });
+    }
+
+    const report = await buildWorkshopReport(adminContext(SID), SID);
+    expect(report!.rounds[0].evidenceKind.overall.suppressionReason).toBe('small_cell');
+    const md = planDelibMarkdownDocument(report!);
+    expect(md).toContain('3건 미만인 항목이 있어');
+    // 규칙을 설명하는 안내문은 두 조건을 모두 언급하므로, **억제 줄** 자체만 겨냥한다.
+    // contributors 사유의 문구가 나오면 실제 판정과 다른 설명을 납품하는 것이 된다.
+    expect(md).not.toContain('기여자가 3명 미만이라 개인 태깅');
   });
 });
